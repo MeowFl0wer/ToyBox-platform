@@ -1,0 +1,23 @@
+@import './fonts.css';
+@import './tailwind.css';
+@import './theme.css';
+
+/* 流动背景：让渐变色缓慢漂移，营造呼吸感。
+   用 longhand backgroundImage 设置渐变、配合此处 background-size + 动画即可生效。 */
+@keyframes toybox-bg-flow {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+.bg-flow {
+  background-size: 220% 220% !important;
+  animation: toybox-bg-flow 22s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bg-flow {
+    animation: none;
+    background-size: auto !important;
+  }
+}

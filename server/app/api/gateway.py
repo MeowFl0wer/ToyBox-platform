@@ -16,15 +16,14 @@ from sqlalchemy.orm import Session
 
 from ..core.config import settings
 from ..core.database import get_db
-from ..core.deps import resolve_user_optional
 from ..core.response import (
     APIError,
     CODE_MODULE_DISABLED,
     CODE_MODULE_NOT_FOUND,
     CODE_UNAUTHORIZED,
 )
-from ..core.security import build_module_user_headers
-from ..models import InstalledModule, ModuleUserPreference
+from ..core.security import build_module_user_headers, decode_module_token
+from ..models import InstalledModule, ModuleUserPreference, User
 
 router = APIRouter(prefix="/api/modules", tags=["gateway"])
 
@@ -50,7 +49,15 @@ async def gateway(module_id: str, path: str, request: Request, db: Session = Dep
     if m.status != "active" or not m.internal_backend_url:
         raise APIError(CODE_MODULE_DISABLED, "模块未启用或未在运行")
 
-    user = resolve_user_optional(request, db)
+    # 鉴权改用模块级 token（Bearer），不再凭 Cookie——iframe 已 sandbox 为不透明源、拿不到 Cookie
+    user = None
+    auth = request.headers.get("Authorization", "")
+    if auth.lower().startswith("bearer "):
+        uid = decode_module_token(auth[7:].strip(), module_id)
+        if uid:
+            u = db.get(User, uid)
+            if u and u.status == "active":
+                user = u
     if m.auth_required and not user:
         raise APIError(CODE_UNAUTHORIZED, "请先登录")
 

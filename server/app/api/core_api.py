@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 from ..core import ratelimit
 from ..core.database import get_db
 from ..core.deps import get_client_ip, get_current_user, get_optional_user
-from ..core.response import APIError, CODE_MODULE_NOT_FOUND, ok
-from ..core.security import clean_text
+from ..core.response import APIError, CODE_MODULE_DISABLED, CODE_MODULE_NOT_FOUND, ok
+from ..core.security import clean_text, create_module_token
 from ..models import InstalledModule, ModuleUserPreference, PageView, SiteContent, User
 from ..schemas import PageViewIn
 from ..serializers import module_public
@@ -75,6 +75,17 @@ def remove_favorite(module_id: str, db: Session = Depends(get_db), user: User = 
     pref.favorite = False
     db.commit()
     return ok(module_public(m, pref), message="已取消收藏")
+
+
+@router.post("/modules/{module_id}/token")
+def issue_module_token(module_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """为 iframe 宿主签发模块级短期 token（供 postMessage RPC 调用网关），需登录。"""
+    m = db.query(InstalledModule).filter(InstalledModule.module_id == module_id).first()
+    if not m or m.hidden:
+        raise APIError(CODE_MODULE_NOT_FOUND, "模块不存在")
+    if m.status != "active":
+        raise APIError(CODE_MODULE_DISABLED, "模块未启用")
+    return ok({"token": create_module_token(user.id, module_id), "expires_in": 1800})
 
 
 @router.post("/analytics/page-view")

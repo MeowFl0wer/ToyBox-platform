@@ -1,6 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Clock, Lock, LogIn } from "lucide-react";
 import type { ThemePalette } from "../theme";
-import type { ApiModule } from "../api/client";
+import { api, type ApiModule } from "../api/client";
 import { moduleEmoji } from "../api/moduleIcon";
 import { Reveal } from "./anim";
 
@@ -18,7 +19,6 @@ export function ModuleHostPage({ module, palette, isLoggedIn, onBack, onOpenAuth
 
   return (
     <div className="min-h-full bg-flow flex flex-col" style={{ fontFamily: "'Nunito', sans-serif", background: palette.pageBg }}>
-      {/* ModuleHeader：图标 / 名称 / 简介 / 状态 / 登录要求 */}
       <div className="px-6 md:px-10 pt-6 pb-5 flex-shrink-0" style={{ borderBottom: `1px solid ${palette.border}` }}>
         <button
           onClick={onBack}
@@ -44,29 +44,109 @@ export function ModuleHostPage({ module, palette, isLoggedIn, onBack, onOpenAuth
         </div>
       </div>
 
-      {/* ModuleFrameContainer：iframe 承载模块前端（业务 API 经主站网关 /api/modules/{id}/* 转发） */}
       <div className="flex-1 px-6 md:px-10 py-6 min-h-0">
         {comingSoon ? (
           <Centered><ComingSoon palette={palette} /></Centered>
         ) : needLogin ? (
           <Centered><NeedLogin palette={palette} onOpenAuth={onOpenAuth} /></Centered>
         ) : (
-          <iframe
-            title={module.name}
-            src={`/module-assets/${module.module_id}/index.html`}
-            style={{
-              width: "100%",
-              height: "calc(100vh - 200px)",
-              minHeight: "420px",
-              border: `1px solid ${palette.border}`,
-              borderRadius: "16px",
-              background: "#fff",
-              boxShadow: `0 12px 30px ${palette.glow}`,
-            }}
-          />
+          <ModuleFrame module={module} palette={palette} />
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * 模块承载：iframe 用 sandbox(allow-scripts) 成为不透明源 —— 拿不到主站 Cookie/不能同源访问 /api/auth/refresh。
+ * 模块前端不直接联网，而是通过 postMessage 把 API 请求发给本宿主；宿主用「模块级短期 token」
+ * 调用网关 /api/modules/{id}/* 并把结果回传。token 只在宿主，且只能访问本模块。
+ */
+function ModuleFrame({ module, palette }: { module: ApiModule; palette: ThemePalette }) {
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const tokenRef = useRef<string | null>(null);
+  const [ready, setReady] = useState(!module.auth_required); // 匿名模块无需 token，直接就绪
+  const [err, setErr] = useState("");
+
+  // 取模块级 token（仅需登录模块）
+  useEffect(() => {
+    if (!module.auth_required) return;
+    let alive = true;
+    api
+      .moduleToken(module.module_id)
+      .then((d) => {
+        if (!alive) return;
+        tokenRef.current = d.token;
+        setReady(true);
+      })
+      .catch(() => alive && setErr("获取模块访问令牌失败"));
+    return () => {
+      alive = false;
+    };
+  }, [module.module_id, module.auth_required]);
+
+  // postMessage RPC 代理：只代发本模块网关路径，带模块 token
+  useEffect(() => {
+    const onMessage = async (e: MessageEvent) => {
+      const win = iframeRef.current?.contentWindow;
+      if (!win || e.source !== win) return; // 只接受本 iframe 的消息
+      const msg = e.data;
+      if (!msg || msg.source !== "pt-module" || msg.type !== "api") return;
+      const reply = (status: number, body: unknown) =>
+        win.postMessage({ source: "pt-host", type: "api_result", reqId: msg.reqId, status, body }, "*");
+      // 仅允许相对子路径，拼到本模块网关下
+      const sub = typeof msg.path === "string" && msg.path.startsWith("/") && !msg.path.includes("://") ? msg.path : null;
+      if (!sub) {
+        reply(0, { code: 10004, message: "非法请求路径", data: null });
+        return;
+      }
+      try {
+        const headers: Record<string, string> = {};
+        if (msg.body !== undefined && msg.body !== null) headers["Content-Type"] = "application/json";
+        if (tokenRef.current) headers["Authorization"] = `Bearer ${tokenRef.current}`;
+        const res = await fetch(`/api/modules/${module.module_id}${sub}`, {
+          method: (msg.method || "GET").toUpperCase(),
+          headers,
+          credentials: "omit", // 不带 Cookie，纯 token 鉴权
+          body: msg.body !== undefined && msg.body !== null ? JSON.stringify(msg.body) : undefined,
+        });
+        let json: unknown = {};
+        try {
+          json = await res.json();
+        } catch {
+          /* 空响应 */
+        }
+        reply(res.status, json);
+      } catch {
+        reply(0, { code: 50000, message: "网络错误", data: null });
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [module.module_id]);
+
+  if (err) {
+    return <Centered><CardBox palette={palette}><div style={{ fontSize: "16px", color: "#D14343", fontWeight: 700 }}>{err}</div></CardBox></Centered>;
+  }
+  if (!ready) {
+    return <Centered><CardBox palette={palette}><div style={{ fontSize: "44px" }}>⏳</div><div style={{ color: palette.muted, fontWeight: 700, marginTop: "8px" }}>正在准备模块…</div></CardBox></Centered>;
+  }
+  return (
+    <iframe
+      ref={iframeRef}
+      title={module.name}
+      src={`/module-assets/${module.module_id}/index.html`}
+      sandbox="allow-scripts"
+      style={{
+        width: "100%",
+        height: "calc(100vh - 200px)",
+        minHeight: "420px",
+        border: `1px solid ${palette.border}`,
+        borderRadius: "16px",
+        background: "#fff",
+        boxShadow: `0 12px 30px ${palette.glow}`,
+      }}
+    />
   );
 }
 

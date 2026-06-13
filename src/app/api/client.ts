@@ -116,6 +116,7 @@ export const api = {
 
   // ---- core ----
   getModules: () => request<ApiModule[]>("GET", "/api/core/modules"),
+  moduleToken: (id: string) => request<{ token: string; expires_in: number }>("POST", `/api/core/modules/${id}/token`, {}),
   favorite: (id: string) => request<ApiModule>("POST", `/api/core/modules/${id}/favorite`, {}),
   unfavorite: (id: string) => request<ApiModule>("DELETE", `/api/core/modules/${id}/favorite`),
   siteContents: (keys: string) => request<Record<string, any>>("GET", `/api/core/site-contents?keys=${encodeURIComponent(keys)}`),

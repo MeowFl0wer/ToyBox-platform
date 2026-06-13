@@ -67,6 +67,31 @@ def decode_access_token(token: str) -> dict | None:
     return payload
 
 
+def create_module_token(user_id: str, module_id: str, ttl_min: int = 30) -> str:
+    """模块级短期 token：由主站签发给 iframe 宿主，仅用于访问该模块网关。
+    与 access token 区分（type=module、绑定 mod=module_id），即便泄露也只能访问该模块。"""
+    now = _now()
+    payload = {
+        "sub": user_id,
+        "mod": module_id,
+        "type": "module",
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(minutes=ttl_min)).timestamp()),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
+def decode_module_token(token: str, module_id: str) -> str | None:
+    """校验模块 token，返回 user_id；type 必须为 module 且 mod 必须等于当前模块。"""
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+    if payload.get("type") != "module" or payload.get("mod") != module_id:
+        return None
+    return payload.get("sub")
+
+
 def new_refresh_token() -> str:
     """不可猜测的随机 refresh token（明文给前端 Cookie，库里只存哈希）。"""
     return secrets.token_urlsafe(48)

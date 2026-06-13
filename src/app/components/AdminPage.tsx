@@ -174,20 +174,80 @@ function ModulesPanel({ palette }: { palette: ThemePalette }) {
   );
 }
 
+const JOB_STAGES: Record<string, string> = {
+  pending: "排队中", cloning: "克隆仓库", validating: "校验 module.yaml",
+  building_frontend: "构建前端", building_backend: "构建后端", migrating: "执行数据库迁移",
+  starting_container: "启动模块后端", health_checking: "健康检查", success: "已上线", failed: "失败",
+};
+
 function DeployPanel({ palette }: { palette: ThemePalette }) {
+  const [repo, setRepo] = useState("https://github.com/MeowFl0wer/personal-tool-module-welcome");
+  const [ref, setRef] = useState("");
+  const [job, setJob] = useState<{ id: string; status: string; logs: string; error_message?: string; module_id?: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!job || job.status === "success" || job.status === "failed") return;
+    const t = setInterval(async () => {
+      try {
+        setJob(await api.adminInstallJob(job.id));
+      } catch {
+        /* ignore */
+      }
+    }, 1500);
+    return () => clearInterval(t);
+  }, [job?.id, job?.status]);
+
+  const install = async () => {
+    setErr("");
+    setBusy(true);
+    try {
+      const { job_id } = await api.adminInstall(repo.trim(), ref.trim());
+      setJob({ id: job_id, status: "pending", logs: "" });
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "安装失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const done = job?.status === "success" || job?.status === "failed";
   return (
     <Panel palette={palette}>
-      <H2 palette={palette}>模块部署（GitHub 安装）</H2>
-      <div style={{ fontSize: "13px", color: palette.muted, lineHeight: 1.8 }}>
-        按架构文档第 12 章规划：填写模块 GitHub 仓库地址 → 主站 clone、读取 <code>module.yaml</code>、校验、构建前后端、创建独立数据库、执行迁移、启动容器、健康检查后上线。
+      <H2 palette={palette}>模块部署（GitHub 一键安装）</H2>
+      <div style={{ fontSize: "13px", color: palette.muted, lineHeight: 1.7, marginBottom: "12px" }}>
+        填写模块 GitHub 仓库地址 → 主站 clone、读 <code>module.yaml</code> 校验、构建前端、起后端、健康检查后自动上线。
       </div>
-      <div className="mt-4 flex flex-col gap-2.5 opacity-70">
-        <input disabled placeholder="https://github.com/you/personal-tool-module-xxx" className="rounded-xl px-3.5 py-2.5" style={{ background: palette.cardAlt, border: `1px solid ${palette.border}`, fontSize: "14px", fontFamily: "'Nunito', sans-serif" }} />
-        <input disabled placeholder="分支 / Tag / Commit（如 v1.0.0）" className="rounded-xl px-3.5 py-2.5" style={{ background: palette.cardAlt, border: `1px solid ${palette.border}`, fontSize: "14px", fontFamily: "'Nunito', sans-serif" }} />
+      <div className="flex flex-col gap-2.5">
+        <Input palette={palette} value={repo} onChange={setRepo} placeholder="https://github.com/you/personal-tool-module-xxx" />
+        <Input palette={palette} value={ref} onChange={setRef} placeholder="分支 / Tag / Commit（可空，默认默认分支）" />
       </div>
-      <div className="mt-3 inline-block rounded-full px-3 py-1" style={{ background: palette.soft, color: palette.primaryDark, fontSize: "12px", fontWeight: 800 }}>
-        🚧 一键部署（Docker / Deploy Worker）规划中 · 占位
-      </div>
+      {err && <ErrText text={err} />}
+      <PrimaryBtn palette={palette} onClick={install}>{busy ? "提交中…" : "安装并部署"}</PrimaryBtn>
+
+      {job && (
+        <div className="mt-4 rounded-xl p-4" style={{ background: palette.cardAlt, border: `1px solid ${palette.border}` }}>
+          <div className="flex items-center gap-2 mb-2">
+            {!done && <span className="inline-block h-3 w-3 rounded-full animate-pulse" style={{ background: palette.primary }} />}
+            <span style={{ fontSize: "14px", fontWeight: 900, color: job.status === "failed" ? "#D14343" : palette.ink }}>
+              {job.status === "success" ? "✓ " : ""}{JOB_STAGES[job.status] ?? job.status}
+              {job.module_id ? ` · ${job.module_id}` : ""}
+            </span>
+          </div>
+          {job.error_message && <ErrText text={job.error_message} />}
+          {job.logs && (
+            <pre style={{ fontSize: "11px", color: palette.muted, background: "#fff", borderRadius: "8px", padding: "8px 10px", maxHeight: "180px", overflow: "auto", whiteSpace: "pre-wrap", margin: 0 }}>
+              {job.logs.split("\n").slice(-14).join("\n")}
+            </pre>
+          )}
+          {job.status === "success" && (
+            <div style={{ fontSize: "12px", fontWeight: 700, color: palette.primaryDark, marginTop: "8px" }}>
+              已上线，去「模块管理」或工具大厅即可看到。
+            </div>
+          )}
+        </div>
+      )}
     </Panel>
   );
 }

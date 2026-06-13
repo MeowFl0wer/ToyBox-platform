@@ -48,7 +48,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 log = logging.getLogger("toybox.auth")
 
 REFRESH_COOKIE = "toybox_refresh"
-COOKIE_PATH = "/api/auth"
+# 作用于整个 /api：刷新接口与模块网关 /api/modules/* 的 iframe 请求都能带上
+COOKIE_PATH = "/api"
 
 
 def _now() -> datetime:

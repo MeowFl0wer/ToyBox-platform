@@ -118,7 +118,6 @@ export const api = {
   getModules: () => request<ApiModule[]>("GET", "/api/core/modules"),
   favorite: (id: string) => request<ApiModule>("POST", `/api/core/modules/${id}/favorite`, {}),
   unfavorite: (id: string) => request<ApiModule>("DELETE", `/api/core/modules/${id}/favorite`),
-  welcomeGreeting: () => request<{ greeting: string; nickname: string; uid_display: string }>("GET", "/api/core/modules/welcome/greeting"),
   siteContents: (keys: string) => request<Record<string, any>>("GET", `/api/core/site-contents?keys=${encodeURIComponent(keys)}`),
 
   // ---- admin ----
@@ -131,6 +130,12 @@ export const api = {
   adminHide: (id: string) => request<ApiModule>("POST", `/api/admin/modules/${id}/hide`, {}),
   adminUnhide: (id: string) => request<ApiModule>("POST", `/api/admin/modules/${id}/unhide`, {}),
   adminUninstall: (id: string) => request("DELETE", `/api/admin/modules/${id}`),
+  adminInstall: (repo_url: string, ref: string) => request<{ job_id: string }>("POST", "/api/admin/modules/install", { repo_url, ref }),
+  adminInstallJob: (jobId: string) =>
+    request<{ id: string; module_id: string; status: string; logs: string; error_message: string }>(
+      "GET",
+      `/api/admin/modules/install-jobs/${jobId}`,
+    ),
   adminUsers: () => request<ApiUser[]>("GET", "/api/admin/users"),
   adminDisableUser: (id: string) => request<ApiUser>("POST", `/api/admin/users/${id}/disable`, {}),
   adminEnableUser: (id: string) => request<ApiUser>("POST", `/api/admin/users/${id}/enable`, {}),

@@ -35,6 +35,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+      // 模块前端静态资源（iframe 承载）也走后端
+      '/module-assets': { target: 'http://127.0.0.1:8000', changeOrigin: true },
     },
   },
 

@@ -1,13 +1,17 @@
 """FastAPI 依赖：当前用户、管理员校验、客户端 IP。"""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
 
-from ..models import User
+from ..models import User, UserSession
 from .database import get_db
 from .response import APIError, CODE_FORBIDDEN, CODE_UNAUTHORIZED
-from .security import decode_access_token
+from .security import decode_access_token, hash_token
+
+REFRESH_COOKIE = "toybox_refresh"
 
 
 def get_client_ip(request: Request) -> str:
@@ -52,3 +56,24 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     if user.role != "admin":
         raise APIError(CODE_FORBIDDEN, "需要管理员权限")
     return user
+
+
+def resolve_user_optional(request: Request, db: Session) -> User | None:
+    """网关/iframe 场景：用 Bearer access token，或退回 HttpOnly 刷新 Cookie 识别当前用户。
+    （iframe 内拿不到父窗口内存里的 access token，故支持 Cookie 兜底。）"""
+    token = _bearer(request)
+    if token:
+        payload = decode_access_token(token)
+        if payload:
+            u = db.get(User, payload.get("sub"))
+            if u and u.status == "active":
+                return u
+    raw = request.cookies.get(REFRESH_COOKIE)
+    if raw:
+        sess = db.query(UserSession).filter(UserSession.refresh_token_hash == hash_token(raw)).first()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if sess and sess.revoked_at is None and sess.expires_at > now:
+            u = db.get(User, sess.user_id)
+            if u and u.status == "active":
+                return u
+    return None

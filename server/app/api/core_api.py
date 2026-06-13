@@ -88,18 +88,3 @@ def site_contents(keys: str = Query(default=""), db: Session = Depends(get_db)):
         for r in rows:
             out[r.content_key] = {"content_type": r.content_type, "content_value": r.content_value}
     return ok(out)
-
-
-# ---------- 内置「欢迎模块」（需登录）：进入后显示「欢迎 xxx！！」----------
-@router.get("/modules/welcome/greeting")
-def welcome_greeting(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
-    m = db.query(InstalledModule).filter(InstalledModule.module_id == "welcome").first()
-    if not m or m.hidden or m.status != "active":
-        raise APIError(CODE_MODULE_NOT_FOUND, "模块不可用")
-    # 记录使用情况（last_used / use_count）——属于主站层偏好，非模块业务数据
-    pref = _get_pref(db, user, "welcome")
-    pref.use_count += 1
-    pref.last_used_at = _now()
-    db.commit()
-    name = user.nickname or user.username
-    return ok({"greeting": f"欢迎 {name}！！", "nickname": name, "uid_display": user.uid_display})

@@ -3,13 +3,17 @@ from __future__ import annotations
 
 import logging
 
+import threading
+
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .api import admin, auth, core_api
+from . import modules_runtime
+from .api import admin, auth, core_api, gateway
 from .core.config import settings
 from .core.response import APIError, CODE_BAD_PARAM, CODE_SERVER_ERROR, fail
 from .seed import run_seed
@@ -64,6 +68,10 @@ async def _unhandled(_: Request, exc: Exception):
 app.include_router(auth.router)
 app.include_router(core_api.router)
 app.include_router(admin.router)
+app.include_router(gateway.router)
+
+# 模块前端静态资源（iframe 承载）：/module-assets/{module_id}/...
+app.mount("/module-assets", StaticFiles(directory=str(modules_runtime.ASSETS), html=True), name="module-assets")
 
 
 @app.get("/api/health")
@@ -74,4 +82,6 @@ def health():
 @app.on_event("startup")
 def _startup():
     run_seed()
+    # 后台重新拉起已安装的 active 模块（建 venv/健康检查较慢，放线程不阻塞启动）
+    threading.Thread(target=modules_runtime.relaunch_active_modules, daemon=True).start()
     log.info("%s 已启动", settings.app_name)

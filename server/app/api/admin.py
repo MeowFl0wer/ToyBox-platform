@@ -18,8 +18,9 @@ from ..core.response import (
     ok,
 )
 from ..core.security import clean_text, sanitize_html, strip_tags
-from ..models import AdminAuditLog, InstalledModule, SiteContent, User
-from ..schemas import ComingSoonIn, ModuleUpdateIn, SiteContentIn
+from ..models import AdminAuditLog, InstalledModule, InstallJob, SiteContent, User
+from ..schemas import ComingSoonIn, InstallModuleIn, ModuleUpdateIn, SiteContentIn
+from .. import modules_runtime
 from ..serializers import module_public, user_public
 
 router = APIRouter(prefix="/api/admin", tags=["admin"], dependencies=[Depends(require_admin)])
@@ -140,16 +141,37 @@ def uninstall_module(module_id: str, request: Request, db: Session = Depends(get
         raise APIError(CODE_MODULE_NOT_FOUND, "模块不存在")
     if m.builtin:
         raise APIError(CODE_FORBIDDEN, "内置模块不可卸载")
+    name = m.name
     db.delete(m)
-    _audit(db, request, admin, "module.uninstall", "module", module_id, {"name": m.name})
+    _audit(db, request, admin, "module.uninstall", "module", module_id, {"name": name})
     db.commit()
+    modules_runtime.uninstall_module(module_id)  # 停进程 + 删安装目录/前端资源
     return ok(message="已卸载")
 
 
 @router.post("/modules/install")
-def install_module(request: Request, admin: User = Depends(require_admin)):
-    """GitHub 安装 / Docker 部署：按架构文档规划，当前为占位（务实子集阶段未实现）。"""
-    raise APIError(CODE_BAD_PARAM, "GitHub 安装与一键部署功能规划中（占位）")
+def install_module(body: InstallModuleIn, request: Request, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    """填 GitHub 仓库地址 → 创建安装任务（后台异步：clone→构建→起后端→健康检查→上线）。"""
+    job_id = modules_runtime.start_install(body.repo_url, body.ref, admin.id)
+    _audit(db, request, admin, "module.install", "module", body.repo_url, {"ref": body.ref, "job_id": job_id})
+    db.commit()
+    return ok({"job_id": job_id}, message="安装任务已创建")
+
+
+@router.get("/modules/install-jobs/{job_id}")
+def install_job(job_id: str, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    job = db.get(InstallJob, job_id)
+    if not job:
+        raise APIError(CODE_NOT_FOUND, "任务不存在")
+    return ok({
+        "id": job.id,
+        "module_id": job.module_id,
+        "status": job.status,
+        "logs": job.logs,
+        "error_message": job.error_message,
+        "created_at": job.created_at.isoformat() if job.created_at else None,
+        "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    })
 
 
 # ---------- 用户管理 ----------

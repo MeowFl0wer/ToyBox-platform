@@ -24,18 +24,9 @@ def _allocate_uid(db: Session) -> int:
     return seq.value
 
 
+# welcome 模块改为通过「后台 → 模块部署」从 GitHub 安装（personal-tool-module-welcome），
+# 不再内置；todo / journal 仍作为「即将上线」占位入口。
 _MODULES = [
-    dict(
-        module_id="welcome",
-        name="欢迎小屋",
-        description="登录后进来，看看今天的问候。",
-        category="工具",
-        icon="hand-heart",
-        auth_required=True,
-        builtin=True,
-        status="active",
-        sort_order=10,
-    ),
     dict(
         module_id="todo",
         name="待办清单 Todo",

@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
 import { ArrowLeft, Clock, Lock, LogIn } from "lucide-react";
 import type { ThemePalette } from "../theme";
-import { api, ApiError, type ApiModule } from "../api/client";
+import type { ApiModule } from "../api/client";
 import { moduleEmoji } from "../api/moduleIcon";
 import { Reveal } from "./anim";
 
@@ -18,9 +17,9 @@ export function ModuleHostPage({ module, palette, isLoggedIn, onBack, onOpenAuth
   const needLogin = module.auth_required && !isLoggedIn;
 
   return (
-    <div className="min-h-full bg-flow" style={{ fontFamily: "'Nunito', sans-serif", background: palette.pageBg }}>
+    <div className="min-h-full bg-flow flex flex-col" style={{ fontFamily: "'Nunito', sans-serif", background: palette.pageBg }}>
       {/* ModuleHeader：图标 / 名称 / 简介 / 状态 / 登录要求 */}
-      <div className="px-6 md:px-10 pt-6 pb-5" style={{ borderBottom: `1px solid ${palette.border}` }}>
+      <div className="px-6 md:px-10 pt-6 pb-5 flex-shrink-0" style={{ borderBottom: `1px solid ${palette.border}` }}>
         <button
           onClick={onBack}
           className="mb-4 inline-flex items-center gap-1.5"
@@ -36,6 +35,7 @@ export function ModuleHostPage({ module, palette, isLoggedIn, onBack, onOpenAuth
             <div style={{ fontSize: "22px", fontWeight: 900, color: palette.ink }}>{module.name}</div>
             <div className="flex flex-wrap items-center gap-2 mt-1" style={{ fontSize: "12px", fontWeight: 700, color: palette.muted }}>
               <span>{module.description}</span>
+              {module.version && <Badge palette={palette}>v{module.version}</Badge>}
               <Badge palette={palette}>{module.category}</Badge>
               {module.auth_required && <Badge palette={palette}><Lock size={11} /> 需要登录</Badge>}
               <Badge palette={palette}>{comingSoon ? "即将上线" : "运行中"}</Badge>
@@ -44,20 +44,34 @@ export function ModuleHostPage({ module, palette, isLoggedIn, onBack, onOpenAuth
         </div>
       </div>
 
-      {/* ModuleFrameContainer：当前为内置模块直接渲染（架构文档中规划为 iframe 承载） */}
-      <div className="px-6 md:px-10 py-10 flex justify-center">
+      {/* ModuleFrameContainer：iframe 承载模块前端（业务 API 经主站网关 /api/modules/{id}/* 转发） */}
+      <div className="flex-1 px-6 md:px-10 py-6 min-h-0">
         {comingSoon ? (
-          <ComingSoon palette={palette} />
+          <Centered><ComingSoon palette={palette} /></Centered>
         ) : needLogin ? (
-          <NeedLogin palette={palette} onOpenAuth={onOpenAuth} />
-        ) : module.module_id === "welcome" ? (
-          <WelcomeModule palette={palette} />
+          <Centered><NeedLogin palette={palette} onOpenAuth={onOpenAuth} /></Centered>
         ) : (
-          <Placeholder palette={palette} />
+          <iframe
+            title={module.name}
+            src={`/module-assets/${module.module_id}/index.html`}
+            style={{
+              width: "100%",
+              height: "calc(100vh - 200px)",
+              minHeight: "420px",
+              border: `1px solid ${palette.border}`,
+              borderRadius: "16px",
+              background: "#fff",
+              boxShadow: `0 12px 30px ${palette.glow}`,
+            }}
+          />
         )}
       </div>
     </div>
   );
+}
+
+function Centered({ children }: { children: React.ReactNode }) {
+  return <div className="flex justify-center pt-6">{children}</div>;
 }
 
 function Badge({ children, palette }: { children: React.ReactNode; palette: ThemePalette }) {
@@ -71,7 +85,7 @@ function Badge({ children, palette }: { children: React.ReactNode; palette: Them
   );
 }
 
-function Card({ children, palette }: { children: React.ReactNode; palette: ThemePalette }) {
+function CardBox({ children, palette }: { children: React.ReactNode; palette: ThemePalette }) {
   return (
     <Reveal
       immediate
@@ -83,51 +97,21 @@ function Card({ children, palette }: { children: React.ReactNode; palette: Theme
   );
 }
 
-function WelcomeModule({ palette }: { palette: ThemePalette }) {
-  const [greeting, setGreeting] = useState<string>("");
-  const [err, setErr] = useState("");
-
-  useEffect(() => {
-    api
-      .welcomeGreeting()
-      .then((d) => setGreeting(d.greeting))
-      .catch((e) => setErr(e instanceof ApiError ? e.message : "加载失败"));
-  }, []);
-
-  return (
-    <Card palette={palette}>
-      <div style={{ fontSize: "56px", marginBottom: "8px" }}>🎉</div>
-      {err ? (
-        <div style={{ fontSize: "15px", color: "#D14343", fontWeight: 700 }}>{err}</div>
-      ) : (
-        <>
-          <div style={{ fontSize: "30px", fontWeight: 900, color: palette.ink, lineHeight: 1.3 }}>
-            {greeting || "正在加载…"}
-          </div>
-          <div style={{ fontSize: "14px", color: palette.muted, fontWeight: 600, marginTop: "12px", lineHeight: 1.7 }}>
-            这是一个需要登录的示例模块。它从主站拿到当前用户的昵称，向你问好 👋
-          </div>
-        </>
-      )}
-    </Card>
-  );
-}
-
 function ComingSoon({ palette }: { palette: ThemePalette }) {
   return (
-    <Card palette={palette}>
+    <CardBox palette={palette}>
       <Clock size={44} style={{ color: palette.secondary, margin: "0 auto 12px" }} />
       <div style={{ fontSize: "22px", fontWeight: 900, color: palette.ink }}>即将上线</div>
       <div style={{ fontSize: "14px", color: palette.muted, fontWeight: 600, marginTop: "10px", lineHeight: 1.7 }}>
         这个功能正在开发中，做好后会出现在这里，敬请期待 ✨
       </div>
-    </Card>
+    </CardBox>
   );
 }
 
 function NeedLogin({ palette, onOpenAuth }: { palette: ThemePalette; onOpenAuth: () => void }) {
   return (
-    <Card palette={palette}>
+    <CardBox palette={palette}>
       <Lock size={40} style={{ color: palette.primary, margin: "0 auto 12px" }} />
       <div style={{ fontSize: "20px", fontWeight: 900, color: palette.ink }}>该模块需要登录</div>
       <div style={{ fontSize: "14px", color: palette.muted, fontWeight: 600, margin: "10px 0 18px", lineHeight: 1.7 }}>
@@ -140,15 +124,6 @@ function NeedLogin({ palette, onOpenAuth }: { palette: ThemePalette; onOpenAuth:
       >
         <LogIn size={16} /> 登录 / 注册
       </button>
-    </Card>
-  );
-}
-
-function Placeholder({ palette }: { palette: ThemePalette }) {
-  return (
-    <Card palette={palette}>
-      <div style={{ fontSize: "44px", marginBottom: "8px" }}>🧩</div>
-      <div style={{ fontSize: "18px", fontWeight: 900, color: palette.ink }}>模块已加载</div>
-    </Card>
+    </CardBox>
   );
 }

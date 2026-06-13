@@ -104,6 +104,20 @@ class ComingSoonIn(BaseModel):
         return clean_text(v, 200)
 
 
+class InstallModuleIn(BaseModel):
+    repo_url: str = Field(min_length=10, max_length=300)
+    ref: str = Field(default="", max_length=100)
+
+    @field_validator("repo_url")
+    @classmethod
+    def _repo(cls, v: str) -> str:
+        v = v.strip()
+        # 只允许 https 的 GitHub 仓库地址（架构文档 19.1：限制可信来源）
+        if not v.startswith("https://github.com/"):
+            raise ValueError("仅支持 https://github.com/ 开头的仓库地址")
+        return v
+
+
 class ModuleUpdateIn(BaseModel):
     name: str | None = Field(default=None, max_length=50)
     description: str | None = Field(default=None, max_length=200)

@@ -90,6 +90,13 @@ class InstalledModule(Base):
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="active")
     hidden: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)   # 管理员隐藏，普通用户不可见
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    # 安装/部署信息（由部署器写入）
+    source_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_ref: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    version: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    entry_type: Mapped[str] = mapped_column(String(50), nullable=False, default="iframe")  # iframe | builtin
+    internal_backend_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    manifest: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
@@ -107,6 +114,25 @@ class ModuleUserPreference(Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+class InstallJob(Base):
+    """模块安装/部署任务（架构文档 8.5）。"""
+
+    __tablename__ = "module_install_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    module_id: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    job_type: Mapped[str] = mapped_column(String(50), nullable=False, default="install")
+    # pending|cloning|validating|building_frontend|building_backend|migrating|starting|health_checking|success|failed
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")
+    source_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    source_ref: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    logs: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_by: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class SiteContent(Base):

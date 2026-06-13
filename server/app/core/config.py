@@ -48,10 +48,15 @@ class Settings(BaseSettings):
     # 模块部署方式：local（本地进程，开发态，无需 Docker）| docker（生产，构建镜像+容器+独立 Postgres 库）
     deploy_mode: str = "local"
     docker_network: str = "toybox_net"          # 模块容器加入的内部网络
-    postgres_container: str = "postgres"        # 用于 docker exec psql 建库的 Postgres 容器名
-    postgres_superuser: str = "postgres"
     module_image_prefix: str = "toybox-module-"
     module_container_prefix: str = "toybox-module-"
+    # 部署任务执行位置：true=主站进程内线程（本地/开发）；false=独立 Deploy Worker（生产，主站不碰 docker）
+    worker_inproc: bool = True
+    # docker 模式建模块独立库用的 Postgres 超管连接（worker 直连 psycopg，不再 docker exec）
+    postgres_host: str = "toybox-postgres"
+    postgres_port: int = 5432
+    postgres_superuser: str = "postgres"
+    postgres_password: str = ""
 
     # 允许的前端来源（携带 Cookie，必须显式列出，不能用 *）
     cors_origins: list[str] = [

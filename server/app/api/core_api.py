@@ -3,13 +3,16 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
+from ..core import ratelimit
 from ..core.database import get_db
-from ..core.deps import get_current_user, get_optional_user
+from ..core.deps import get_client_ip, get_current_user, get_optional_user
 from ..core.response import APIError, CODE_MODULE_NOT_FOUND, ok
-from ..models import InstalledModule, ModuleUserPreference, SiteContent, User
+from ..core.security import clean_text
+from ..models import InstalledModule, ModuleUserPreference, PageView, SiteContent, User
+from ..schemas import PageViewIn
 from ..serializers import module_public
 
 router = APIRouter(prefix="/api/core", tags=["core"])
@@ -72,6 +75,32 @@ def remove_favorite(module_id: str, db: Session = Depends(get_db), user: User = 
     pref.favorite = False
     db.commit()
     return ok(module_public(m, pref), message="已取消收藏")
+
+
+@router.post("/analytics/page-view")
+def report_page_view(
+    body: PageViewIn,
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User | None = Depends(get_optional_user),
+):
+    """前端路由变化时上报访问。UV 用登录用户 id，否则用 IP。"""
+    ip = get_client_ip(request)
+    if not ratelimit.allow(f"pv:{user.id if user else ip}", limit=120, window_s=60):
+        return ok()  # 限流时静默丢弃，不报错
+    db.add(
+        PageView(
+            user_id=user.id if user else None,
+            visitor=user.id if user else (ip or "anon"),
+            path=clean_text(body.path, 300),
+            module_id=clean_text(body.module_id, 100),
+            referrer=clean_text(body.referrer, 300),
+            user_agent=request.headers.get("User-Agent", "")[:300],
+            ip_address=ip,
+        )
+    )
+    db.commit()
+    return ok()
 
 
 @router.get("/site-contents")

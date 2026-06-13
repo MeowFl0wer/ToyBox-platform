@@ -7,3 +7,4 @@ bcrypt
 pyjwt
 bleach
 python-multipart
+psutil

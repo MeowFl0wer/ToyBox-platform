@@ -10,7 +10,7 @@ import { ModuleHostPage } from "./components/ModuleHostPage";
 import { AdminPage } from "./components/AdminPage";
 import { fireConfetti } from "./components/anim";
 import { useAuth } from "./api/auth";
-import type { ApiModule } from "./api/client";
+import { api, type ApiModule } from "./api/client";
 import { defaultPalette, themePalettes } from "./theme";
 
 type Page = "home" | "features" | "settings" | "about" | "module" | "admin";
@@ -31,15 +31,22 @@ export default function App() {
     document.documentElement.classList.toggle("dark", isDark);
   }, [isDark]);
 
+  // 首次进入上报访问
+  useEffect(() => {
+    api.reportPageView("/home");
+  }, []);
+
   const handleNavigate = (page: string) => {
     setCurrentPage(page as Page);
     setMobileMenuOpen(false);
+    api.reportPageView("/" + page);
   };
 
   const openModule = (m: ApiModule) => {
     setActiveModule(m);
     setCurrentPage("module");
     setMobileMenuOpen(false);
+    api.reportPageView(`/tools/${m.module_id}`, m.module_id);
   };
 
   const onAuthed = () => {

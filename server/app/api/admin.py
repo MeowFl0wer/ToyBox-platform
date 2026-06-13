@@ -1,11 +1,20 @@
 """后台管理接口（/api/admin/*）。仅管理员可访问，所有写操作记审计日志。"""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import shutil
+import urllib.request
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Request
+from sqlalchemy import distinct, func, text
 from sqlalchemy.orm import Session
 
+try:
+    import psutil
+except Exception:  # noqa: BLE001
+    psutil = None  # type: ignore
+
+from ..core.config import settings
 from ..core.database import get_db
 from ..core.deps import get_client_ip, require_admin
 from ..core.response import (
@@ -18,7 +27,7 @@ from ..core.response import (
     ok,
 )
 from ..core.security import clean_text, sanitize_html, strip_tags
-from ..models import AdminAuditLog, InstalledModule, InstallJob, SiteContent, User
+from ..models import AdminAuditLog, InstalledModule, InstallJob, PageView, SiteContent, User
 from ..schemas import ComingSoonIn, InstallModuleIn, ModuleUpdateIn, SiteContentIn
 from .. import modules_runtime
 from ..serializers import module_public, user_public
@@ -142,10 +151,10 @@ def uninstall_module(module_id: str, request: Request, db: Session = Depends(get
     if m.builtin:
         raise APIError(CODE_FORBIDDEN, "内置模块不可卸载")
     name = m.name
-    db.delete(m)
+    db.delete(m)  # 立即从注册表移除（前端即时更新）
     _audit(db, request, admin, "module.uninstall", "module", module_id, {"name": name})
     db.commit()
-    modules_runtime.uninstall_module(module_id)  # 停进程 + 删安装目录/前端资源
+    modules_runtime.start_uninstall(module_id, admin.id)  # 经任务队列停服务/容器 + 清理文件
     return ok(message="已卸载")
 
 
@@ -171,6 +180,116 @@ def install_job(job_id: str, db: Session = Depends(get_db), admin: User = Depend
         "error_message": job.error_message,
         "created_at": job.created_at.isoformat() if job.created_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
+    })
+
+
+@router.post("/modules/{module_id}/restart")
+def restart_module(module_id: str, request: Request, db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    m = db.query(InstalledModule).filter(InstalledModule.module_id == module_id).first()
+    if not m:
+        raise APIError(CODE_MODULE_NOT_FOUND, "模块不存在")
+    job_id = modules_runtime.start_restart(module_id, admin.id)  # 走任务队列（主站不直接操作 docker）
+    _audit(db, request, admin, "module.restart", "module", module_id, {"job_id": job_id})
+    db.commit()
+    return ok({"job_id": job_id}, message="已触发重启")
+
+
+@router.get("/modules/{module_id}/logs")
+def module_logs(module_id: str, admin: User = Depends(require_admin)):
+    return ok({"logs": modules_runtime.module_logs(module_id)})
+
+
+# ---------- 访问统计（架构文档 13.5）----------
+def _day_start(d) -> datetime:
+    return datetime(d.year, d.month, d.day)
+
+
+@router.get("/analytics/overview")
+def analytics_overview(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    today = _now().date()
+    ts = _day_start(today)
+    today_pv = db.query(func.count(PageView.id)).filter(PageView.created_at >= ts).scalar() or 0
+    today_uv = db.query(func.count(distinct(PageView.visitor))).filter(PageView.created_at >= ts).scalar() or 0
+    total_pv = db.query(func.count(PageView.id)).scalar() or 0
+    total_uv = db.query(func.count(distinct(PageView.visitor))).scalar() or 0
+    last7 = []
+    for i in range(6, -1, -1):
+        d = today - timedelta(days=i)
+        ds = _day_start(d)
+        de = ds + timedelta(days=1)
+        pv = db.query(func.count(PageView.id)).filter(PageView.created_at >= ds, PageView.created_at < de).scalar() or 0
+        last7.append({"date": d.isoformat(), "pv": pv})
+    return ok({"today_pv": today_pv, "today_uv": today_uv, "total_pv": total_pv, "total_uv": total_uv, "last_7_days": last7})
+
+
+@router.get("/analytics/paths")
+def analytics_paths(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    rows = (
+        db.query(PageView.path, func.count(PageView.id).label("c"))
+        .group_by(PageView.path)
+        .order_by(func.count(PageView.id).desc())
+        .limit(15)
+        .all()
+    )
+    return ok([{"path": p, "count": c} for p, c in rows])
+
+
+@router.get("/analytics/modules")
+def analytics_modules(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    rows = (
+        db.query(PageView.module_id, func.count(PageView.id).label("c"))
+        .filter(PageView.module_id != "")
+        .group_by(PageView.module_id)
+        .order_by(func.count(PageView.id).desc())
+        .limit(15)
+        .all()
+    )
+    return ok([{"module_id": m, "count": c} for m, c in rows])
+
+
+# ---------- 系统状态（架构文档 13.4）----------
+@router.get("/system/status")
+def system_status(db: Session = Depends(get_db), admin: User = Depends(require_admin)):
+    try:
+        db.execute(text("SELECT 1"))
+        db_ok = True
+    except Exception:  # noqa: BLE001
+        db_ok = False
+
+    cpu = psutil.cpu_percent(interval=0.2) if psutil else None
+    mem = psutil.virtual_memory().percent if psutil else None
+    try:
+        du = shutil.disk_usage("/")
+        disk = round(du.used / du.total * 100, 1)
+    except Exception:  # noqa: BLE001
+        disk = None
+
+    mods = db.query(InstalledModule).filter(InstalledModule.builtin == False).all()  # noqa: E712
+    running = 0
+    module_status = []
+    for m in mods:
+        healthy = False
+        if m.status == "active" and m.internal_backend_url:
+            hp = (m.manifest.get("backend") or {}).get("health_path", "/health") if m.manifest else "/health"
+            try:
+                with urllib.request.urlopen(m.internal_backend_url + hp, timeout=2) as r:
+                    healthy = r.status == 200
+            except Exception:  # noqa: BLE001
+                healthy = False
+        if healthy:
+            running += 1
+        module_status.append({"module_id": m.module_id, "name": m.name, "status": m.status, "healthy": healthy})
+
+    return ok({
+        "backend": "up",
+        "database": "up" if db_ok else "down",
+        "deploy_mode": settings.deploy_mode,
+        "cpu_percent": cpu,
+        "mem_percent": mem,
+        "disk_percent": disk,
+        "modules_total": len(mods),
+        "modules_running": running,
+        "modules": module_status,
     })
 
 

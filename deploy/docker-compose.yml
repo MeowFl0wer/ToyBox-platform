@@ -3,18 +3,15 @@
 #   cd deploy && cp .env.example .env && 编辑 .env
 #   docker compose up -d --build
 #
-# 说明：
-# - db    ：PostgreSQL，保存主站 main_db 及各模块独立 database。
-# - backend：主站后端（FastAPI）。docker 部署模式下需访问 docker.sock 来构建/运行模块容器，
-#            并通过共享 data 卷把模块前端产物交给 web 托管。
-# - web   ：Nginx，托管主站前端 + /module-assets 模块前端，并把 /api 反代到 backend。
-# - 模块容器由 backend 在安装时创建，加入 toybox_net 内部网络、不暴露公网端口。
+# 安全要点：主站 backend **不**持有 docker.sock；只有 deploy_worker 经 socket-proxy 访问
+# 受限的 Docker API（仅 containers/images/networks，禁用 exec 等）。建模块库由 worker 用
+# psycopg 直连 Postgres 完成，不依赖 docker exec。
 name: toybox
 
 services:
   db:
     image: postgres:16
-    container_name: toybox-postgres        # backend 用 docker exec 此名建模块库；模块用此名连库
+    container_name: toybox-postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
@@ -22,6 +19,25 @@ services:
       POSTGRES_DB: main_db
     volumes:
       - pgdata:/var/lib/postgresql/data
+    networks: [toybox_net]
+
+  # 受限 Docker API 代理：仅暴露部署所需端点，避免把 root 级 docker.sock 直接给应用
+  socket-proxy:
+    image: tecnativa/docker-socket-proxy:latest
+    container_name: toybox-socket-proxy
+    restart: unless-stopped
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      INFO: 1
+      POST: 1          # 允许创建/构建/启动（构建镜像 /build、运行容器 /containers/create）
+      EXEC: 0          # 禁用 exec
+      SECRETS: 0
+      SWARM: 0
+      SYSTEM: 0
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [toybox_net]
 
   backend:
@@ -34,13 +50,31 @@ services:
     environment:
       TOYBOX_DB_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@toybox-postgres:5432/main_db
       TOYBOX_DEPLOY_MODE: docker
-      TOYBOX_DOCKER_NETWORK: toybox_net
-      TOYBOX_POSTGRES_CONTAINER: toybox-postgres
-      TOYBOX_POSTGRES_SUPERUSER: postgres
+      TOYBOX_WORKER_INPROC: "false"     # 安装/重启/卸载任务交给 deploy_worker，主站不碰 docker
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock   # 仅 backend 需要（构建/运行模块容器）
-      - data:/app/server/data                        # 模块源码/前端产物/密钥持久化（与 web 共享）
+      - data:/app/server/data            # 模块源码/前端产物/密钥（与 worker、web 共享）
     depends_on: [db]
+    networks: [toybox_net]               # 注意：未挂载 docker.sock
+
+  deploy_worker:
+    build:
+      context: ..
+      dockerfile: deploy/backend.Dockerfile
+    container_name: toybox-deploy-worker
+    restart: unless-stopped
+    command: python -m app.worker.deploy_worker
+    env_file: .env
+    environment:
+      TOYBOX_DB_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@toybox-postgres:5432/main_db
+      TOYBOX_DEPLOY_MODE: docker
+      TOYBOX_DOCKER_NETWORK: toybox_net
+      DOCKER_HOST: tcp://toybox-socket-proxy:2375     # 经代理访问受限 Docker API
+      TOYBOX_POSTGRES_HOST: toybox-postgres           # 建模块库用（psycopg 直连）
+      TOYBOX_POSTGRES_SUPERUSER: postgres
+      TOYBOX_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - data:/app/server/data
+    depends_on: [db, socket-proxy]
     networks: [toybox_net]
 
   web:
@@ -63,4 +97,7 @@ volumes:
 
 networks:
   toybox_net:
-    name: toybox_net          # 固定名，backend 创建模块容器时 --network toybox_net 需与此一致
+    name: toybox_net          # 固定名，模块容器 --network toybox_net 需与此一致
+
+# 注：若不希望 worker 在主机构建镜像，可改为 CI 构建并推镜像仓库、worker 仅 pull 运行，
+# 这样 socket-proxy 仅需 CONTAINERS/IMAGES/POST，进一步收敛权限。

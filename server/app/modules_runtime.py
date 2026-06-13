@@ -247,27 +247,33 @@ class DockerRunner:
     def _internal_port(self, ctx: DeployCtx) -> int:
         return int((ctx.manifest.get("backend") or {}).get("internal_port", 8000))
 
-    def _psql(self, sql: str, ctx: DeployCtx) -> None:
-        _run(["docker", "exec", settings.postgres_container, "psql", "-U", settings.postgres_superuser,
-              "-v", "ON_ERROR_STOP=0", "-c", sql], None, ctx.logs, timeout=60)
-
     def _provision_db(self, ctx: DeployCtx) -> str | None:
+        """用 psycopg 以超管直连 Postgres 建模块独立库/用户（不再 docker exec，socket 代理无需开放 EXEC）。"""
         if not ctx.db_enabled:
             return None
+        import psycopg  # 仅生产镜像含 psycopg
         mid = ctx.module_id
-        db, user = self._db_name(mid), self._db_user(mid)
+        db, user = self._db_name(mid), self._db_user(mid)  # 由已校验的 module_id 派生，标识符安全
         pw_file = ctx.dest / "db_password"
         pw = pw_file.read_text().strip() if pw_file.exists() else secrets.token_urlsafe(24)
-        # 幂等创建（已存在则忽略报错）；生产建议改用 module_secrets 加密存储密码
-        self._psql(f"DO $$ BEGIN CREATE ROLE {user} LOGIN PASSWORD '{pw}'; EXCEPTION WHEN duplicate_object THEN NULL; END $$;", ctx)
-        r = subprocess.run(["docker", "exec", settings.postgres_container, "psql", "-U", settings.postgres_superuser,
-                            "-tAc", f"SELECT 1 FROM pg_database WHERE datname='{db}'"], capture_output=True, text=True)
-        if r.stdout.strip() != "1":
-            self._psql(f"CREATE DATABASE {db} OWNER {user};", ctx)
-        self._psql(f"GRANT ALL PRIVILEGES ON DATABASE {db} TO {user};", ctx)
+        ctx.logs.append(f"[docker] 直连 Postgres 创建模块库 {db}")
+        conn = psycopg.connect(host=settings.postgres_host, port=settings.postgres_port,
+                               user=settings.postgres_superuser, password=settings.postgres_password,
+                               dbname="postgres", autocommit=True)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (user,))
+            if not cur.fetchone():
+                cur.execute(f'CREATE ROLE "{user}" LOGIN PASSWORD %s', (pw,))
+            cur.execute("SELECT 1 FROM pg_database WHERE datname=%s", (db,))
+            if not cur.fetchone():
+                cur.execute(f'CREATE DATABASE "{db}" OWNER "{user}"')
+            cur.execute(f'GRANT ALL PRIVILEGES ON DATABASE "{db}" TO "{user}"')
+        finally:
+            conn.close()
         pw_file.write_text(pw)
         pw_file.chmod(0o600)
-        return f"postgresql://{user}:{pw}@{settings.postgres_container}:5432/{db}"
+        return f"postgresql://{user}:{pw}@{settings.postgres_host}:{settings.postgres_port}/{db}"
 
     def _build_image(self, ctx: DeployCtx) -> None:
         df = str((ctx.manifest.get("backend") or {}).get("dockerfile", "backend/Dockerfile"))
@@ -351,18 +357,49 @@ def _register(db: Session, manifest: dict, mid: str, internal_url: str, source_u
     db.commit()
 
 
-# ---------- 安装任务 ----------
-def start_install(repo_url: str, ref: str, created_by: str | None) -> str:
+# ---------- 任务队列（install / restart / uninstall 都走任务，主站可不碰 docker）----------
+def _enqueue(job_type: str, *, module_id: str = "", repo_url: str = "", ref: str = "", created_by: str | None = None) -> str:
     db = SessionLocal()
     try:
-        job = InstallJob(source_url=repo_url, source_ref=ref or "", status="pending", created_by=created_by)
+        job = InstallJob(job_type=job_type, module_id=module_id, source_url=repo_url, source_ref=ref or "",
+                         status="pending", created_by=created_by)
         db.add(job)
         db.commit()
         jid = job.id
     finally:
         db.close()
-    threading.Thread(target=_run_job, args=(jid,), daemon=True).start()
+    # 本地/开发：进程内线程立即执行；生产：worker_inproc=false，由独立 Deploy Worker 轮询执行
+    if settings.worker_inproc:
+        threading.Thread(target=dispatch, args=(jid,), daemon=True).start()
     return jid
+
+
+def start_install(repo_url: str, ref: str, created_by: str | None) -> str:
+    return _enqueue("install", repo_url=repo_url, ref=ref, created_by=created_by)
+
+
+def start_restart(module_id: str, created_by: str | None = None) -> str:
+    return _enqueue("restart", module_id=module_id, created_by=created_by)
+
+
+def start_uninstall(module_id: str, created_by: str | None = None) -> str:
+    return _enqueue("uninstall", module_id=module_id, created_by=created_by)
+
+
+def dispatch(job_id: str) -> None:
+    """按 job_type 分发执行（被进程内线程或独立 worker 调用）。"""
+    db = SessionLocal()
+    try:
+        job = db.get(InstallJob, job_id)
+        jt = job.job_type if job else ""
+    finally:
+        db.close()
+    if jt == "install":
+        _do_install(job_id)
+    elif jt == "restart":
+        _do_restart(job_id)
+    elif jt == "uninstall":
+        _do_uninstall(job_id)
 
 
 def _set(db: Session, job: InstallJob, status: str, logs: list[str], error: str = "") -> None:
@@ -373,7 +410,7 @@ def _set(db: Session, job: InstallJob, status: str, logs: list[str], error: str 
     db.commit()
 
 
-def _run_job(job_id: str) -> None:
+def _do_install(job_id: str) -> None:
     db = SessionLocal()
     job = db.get(InstallJob, job_id)
     if not job:
@@ -454,6 +491,71 @@ def _run_job(job_id: str) -> None:
         db.close()
 
 
+def _do_restart(job_id: str) -> None:
+    db = SessionLocal()
+    job = db.get(InstallJob, job_id)
+    if not job:
+        db.close()
+        return
+    logs = [f"restart {job.module_id}"]
+    try:
+        m = db.query(InstalledModule).filter(InstalledModule.module_id == job.module_id).first()
+        if not m or not m.manifest or not (m.manifest.get("backend") or {}).get("enabled"):
+            raise RuntimeError("该模块无后端，无需重启")
+        ctx = DeployCtx(module_id=m.module_id, manifest=m.manifest, dest=INSTALLED / m.module_id, logs=logs)
+        RUNNER.stop(m.module_id)
+        url = RUNNER.ensure_running(ctx)
+        if not _health_ok(url, ctx.health_path, tries=20):
+            raise RuntimeError("重启后健康检查失败")
+        m.internal_backend_url = url
+        _set(db, job, "success", logs)
+        job.finished_at = _now()
+        db.commit()
+    except Exception as e:  # noqa: BLE001
+        logs.append(f"ERROR: {e}")
+        _set(db, job, "failed", logs, error=str(e))
+        job.finished_at = _now()
+        db.commit()
+    finally:
+        db.close()
+
+
+def _do_uninstall(job_id: str) -> None:
+    db = SessionLocal()
+    job = db.get(InstallJob, job_id)
+    if not job:
+        db.close()
+        return
+    logs = [f"uninstall {job.module_id}"]
+    try:
+        uninstall_module(job.module_id)
+        logs.append("✓ 已停止并清理")
+        _set(db, job, "success", logs)
+        job.finished_at = _now()
+        db.commit()
+    except Exception as e:  # noqa: BLE001
+        logs.append(f"ERROR: {e}")
+        _set(db, job, "failed", logs, error=str(e))
+        job.finished_at = _now()
+        db.commit()
+    finally:
+        db.close()
+
+
+def module_logs(module_id: str, tail: int = 200) -> str:
+    if RUNNER.name == "docker":
+        try:
+            r = subprocess.run(["docker", "logs", "--tail", str(tail), f"{settings.module_container_prefix}{module_id}"],
+                               capture_output=True, text=True, timeout=15)
+            return (((r.stdout or "") + (r.stderr or "")).strip() or "（暂无日志）")[-8000:]
+        except Exception as e:  # noqa: BLE001
+            return f"（docker 模式日志请在服务器/worker 侧查看：{e}）"
+    logf = INSTALLED / module_id / "backend.log"
+    if logf.exists():
+        return "\n".join(logf.read_text(errors="replace").splitlines()[-tail:])[-8000:]
+    return "（暂无日志）"
+
+
 def uninstall_module(module_id: str) -> None:
     """停服务（进程/容器）并删除安装目录与前端资源。"""
     RUNNER.stop(module_id)
@@ -463,8 +565,10 @@ def uninstall_module(module_id: str) -> None:
 
 
 def relaunch_active_modules() -> None:
-    """主站启动时：先清理遗留进程（防端口泄漏），再重新拉起 active 已安装模块。"""
+    """主站启动时：清理遗留（本地进程，防端口泄漏）。docker 模式容器独立存活、无需重拉。"""
     RUNNER.cleanup_stale()
+    if RUNNER.name == "docker":
+        return
     db = SessionLocal()
     try:
         mods = (

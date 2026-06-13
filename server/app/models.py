@@ -150,6 +150,22 @@ class SiteContent(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
 
 
+class PageView(Base):
+    """访问记录（架构文档 8.10）。用于 PV/UV 与访问排行统计。"""
+
+    __tablename__ = "page_views"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
+    visitor: Mapped[str] = mapped_column(String(100), nullable=False, default="", index=True)  # UV 标识：用户 id 或 ip
+    path: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    module_id: Mapped[str] = mapped_column(String(100), nullable=False, default="", index=True)
+    referrer: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    user_agent: Mapped[str] = mapped_column(String(300), nullable=False, default="")
+    ip_address: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, index=True)
+
+
 class AdminAuditLog(Base):
     __tablename__ = "admin_audit_logs"
 

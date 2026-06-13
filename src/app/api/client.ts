@@ -119,6 +119,9 @@ export const api = {
   favorite: (id: string) => request<ApiModule>("POST", `/api/core/modules/${id}/favorite`, {}),
   unfavorite: (id: string) => request<ApiModule>("DELETE", `/api/core/modules/${id}/favorite`),
   siteContents: (keys: string) => request<Record<string, any>>("GET", `/api/core/site-contents?keys=${encodeURIComponent(keys)}`),
+  // 访问上报（遥测，失败静默）
+  reportPageView: (path: string, module_id = "") =>
+    request("POST", "/api/core/analytics/page-view", { path, module_id }).catch(() => null),
 
   // ---- admin ----
   adminDashboard: () => request("GET", "/api/admin/dashboard"),
@@ -136,6 +139,12 @@ export const api = {
       "GET",
       `/api/admin/modules/install-jobs/${jobId}`,
     ),
+  adminRestart: (id: string) => request<{ job_id: string }>("POST", `/api/admin/modules/${id}/restart`, {}),
+  adminModuleLogs: (id: string) => request<{ logs: string }>("GET", `/api/admin/modules/${id}/logs`),
+  adminSystemStatus: () => request<any>("GET", "/api/admin/system/status"),
+  adminAnalyticsOverview: () => request<any>("GET", "/api/admin/analytics/overview"),
+  adminAnalyticsPaths: () => request<{ path: string; count: number }[]>("GET", "/api/admin/analytics/paths"),
+  adminAnalyticsModules: () => request<{ module_id: string; count: number }[]>("GET", "/api/admin/analytics/modules"),
   adminUsers: () => request<ApiUser[]>("GET", "/api/admin/users"),
   adminDisableUser: (id: string) => request<ApiUser>("POST", `/api/admin/users/${id}/disable`, {}),
   adminEnableUser: (id: string) => request<ApiUser>("POST", `/api/admin/users/${id}/enable`, {}),

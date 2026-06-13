@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   LayoutDashboard, Boxes, Rocket, FileText, Users, Activity, BarChart3,
-  EyeOff, Eye, Trash2, Plus, ArrowLeft,
+  EyeOff, Eye, Trash2, Plus, ArrowLeft, RotateCw,
 } from "lucide-react";
 import type { ThemePalette } from "../theme";
 import { api, ApiError, type ApiModule, type ApiUser } from "../api/client";
@@ -67,8 +67,8 @@ export function AdminPage({ palette, onExit }: { palette: ThemePalette; onExit: 
             {tab === "deploy" && <DeployPanel palette={palette} />}
             {tab === "content" && <ContentPanel palette={palette} />}
             {tab === "users" && <UsersPanel palette={palette} />}
-            {tab === "system" && <PlaceholderPanel palette={palette} title="系统状态" desc="主站后端 / 数据库 / Nginx / 部署器 / 模块容器运行状态。按架构文档 13.4 规划，待接入监控数据。" />}
-            {tab === "analytics" && <PlaceholderPanel palette={palette} title="访问统计" desc="PV / UV、模块访问排行、来源与设备分布。按架构文档 13.5 规划，待接入埋点数据。" />}
+            {tab === "system" && <SystemPanel palette={palette} />}
+            {tab === "analytics" && <AnalyticsPanel palette={palette} />}
           </div>
         </div>
       </div>
@@ -152,6 +152,9 @@ function ModulesPanel({ palette }: { palette: ThemePalette }) {
               </div>
             </div>
             <div className="flex items-center gap-1.5 flex-shrink-0">
+              {m.status === "active" && !m.builtin && (
+                <IconBtn palette={palette} onClick={() => act(() => api.adminRestart(m.module_id), m.module_id)} disabled={busy === m.module_id} title="重启"><RotateCw size={15} /></IconBtn>
+              )}
               {m.hidden ? (
                 <IconBtn palette={palette} onClick={() => act(() => api.adminUnhide(m.module_id), m.module_id)} disabled={busy === m.module_id} title="取消隐藏"><Eye size={15} /></IconBtn>
               ) : (
@@ -363,13 +366,101 @@ function UsersPanel({ palette }: { palette: ThemePalette }) {
   );
 }
 
-function PlaceholderPanel({ palette, title, desc }: { palette: ThemePalette; title: string; desc: string }) {
+function StatCard({ label, value, palette }: { label: string; value: React.ReactNode; palette: ThemePalette }) {
+  return (
+    <div className="rounded-xl px-4 py-4" style={{ background: palette.soft, border: `1px solid ${palette.border}` }}>
+      <div style={{ fontSize: "22px", fontWeight: 900, color: palette.ink }}>{value}</div>
+      <div style={{ fontSize: "12px", fontWeight: 700, color: palette.muted, marginTop: "2px" }}>{label}</div>
+    </div>
+  );
+}
+
+function SystemPanel({ palette }: { palette: ThemePalette }) {
+  const { data, err } = useAsync<any>(() => api.adminSystemStatus());
+  const s = data || {};
+  const pct = (v: number | null | undefined) => (v == null ? "—" : `${v}%`);
   return (
     <Panel palette={palette}>
-      <H2 palette={palette}>{title}</H2>
-      <div style={{ fontSize: "13px", color: palette.muted, lineHeight: 1.8 }}>{desc}</div>
-      <div className="mt-3 inline-block rounded-full px-3 py-1" style={{ background: palette.soft, color: palette.primaryDark, fontSize: "12px", fontWeight: 800 }}>🚧 规划中 · 占位</div>
+      <H2 palette={palette}>系统状态</H2>
+      {err && <ErrText text={err} />}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <StatCard palette={palette} label="主站后端" value={s.backend === "up" ? "正常" : "—"} />
+        <StatCard palette={palette} label="数据库" value={s.database === "up" ? "正常" : (s.database ? "异常" : "—")} />
+        <StatCard palette={palette} label="部署方式" value={s.deploy_mode ?? "—"} />
+        <StatCard palette={palette} label="CPU" value={pct(s.cpu_percent)} />
+        <StatCard palette={palette} label="内存" value={pct(s.mem_percent)} />
+        <StatCard palette={palette} label="磁盘" value={pct(s.disk_percent)} />
+        <StatCard palette={palette} label="运行中模块" value={`${s.modules_running ?? 0} / ${s.modules_total ?? 0}`} />
+      </div>
+      {(s.modules || []).length > 0 && (
+        <div className="mt-4 flex flex-col gap-2">
+          {s.modules.map((m: any) => (
+            <div key={m.module_id} className="flex items-center justify-between rounded-xl px-4 py-2.5" style={{ background: palette.cardAlt, border: `1px solid ${palette.border}` }}>
+              <span style={{ fontSize: "13px", fontWeight: 800, color: palette.ink }}>{m.name}</span>
+              <span className="inline-flex items-center gap-1.5" style={{ fontSize: "12px", fontWeight: 700, color: m.healthy ? "#0E8A6A" : palette.muted }}>
+                <span className="h-2 w-2 rounded-full" style={{ background: m.healthy ? "#22c55e" : m.status === "active" ? "#f59e0b" : "#cbd5e1" }} />
+                {m.healthy ? "健康" : m.status === "active" ? "未响应" : "未运行"}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </Panel>
+  );
+}
+
+function RankList({ rows, keyName, palette }: { rows: any[] | null; keyName: string; palette: ThemePalette }) {
+  if (!rows || rows.length === 0) return <div style={{ fontSize: "13px", color: palette.muted }}>暂无数据</div>;
+  const max = Math.max(1, ...rows.map((r) => r.count));
+  return (
+    <div className="flex flex-col gap-2">
+      {rows.map((r, i) => (
+        <div key={i}>
+          <div className="flex items-center justify-between" style={{ fontSize: "12px", color: palette.ink, fontWeight: 700 }}>
+            <span className="truncate">{r[keyName] || "（首页）"}</span>
+            <span style={{ color: palette.muted }}>{r.count}</span>
+          </div>
+          <div style={{ height: "6px", borderRadius: "3px", background: palette.soft, marginTop: "3px" }}>
+            <div style={{ width: `${Math.round((r.count / max) * 100)}%`, height: "100%", borderRadius: "3px", background: palette.activeGradient }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AnalyticsPanel({ palette }: { palette: ThemePalette }) {
+  const ov = useAsync<any>(() => api.adminAnalyticsOverview());
+  const paths = useAsync<any[]>(() => api.adminAnalyticsPaths());
+  const mods = useAsync<any[]>(() => api.adminAnalyticsModules());
+  const o = ov.data || {};
+  const last7: any[] = o.last_7_days || [];
+  const maxpv = Math.max(1, ...last7.map((d) => d.pv));
+  return (
+    <div className="flex flex-col gap-5">
+      <Panel palette={palette}>
+        <H2 palette={palette}>访问概览</H2>
+        {ov.err && <ErrText text={ov.err} />}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <StatCard palette={palette} label="今日 PV" value={o.today_pv ?? 0} />
+          <StatCard palette={palette} label="今日 UV" value={o.today_uv ?? 0} />
+          <StatCard palette={palette} label="总 PV" value={o.total_pv ?? 0} />
+          <StatCard palette={palette} label="总 UV" value={o.total_uv ?? 0} />
+        </div>
+        <div className="mt-4 flex items-end gap-2" style={{ height: "86px" }}>
+          {last7.map((d) => (
+            <div key={d.date} className="flex-1 flex flex-col items-center justify-end gap-1" style={{ height: "100%" }}>
+              <div title={`${d.date}: ${d.pv}`} style={{ width: "100%", height: `${Math.round((d.pv / maxpv) * 60) + 2}px`, background: palette.activeGradient, borderRadius: "4px" }} />
+              <span style={{ fontSize: "10px", color: palette.muted }}>{String(d.date).slice(5)}</span>
+            </div>
+          ))}
+        </div>
+      </Panel>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <Panel palette={palette}><H2 palette={palette}>访问路径 Top</H2><RankList rows={paths.data} keyName="path" palette={palette} /></Panel>
+        <Panel palette={palette}><H2 palette={palette}>模块访问 Top</H2><RankList rows={mods.data} keyName="module_id" palette={palette} /></Panel>
+      </div>
+    </div>
   );
 }
 

@@ -104,6 +104,12 @@ class ComingSoonIn(BaseModel):
         return clean_text(v, 200)
 
 
+class PageViewIn(BaseModel):
+    path: str = Field(min_length=1, max_length=300)
+    module_id: str = Field(default="", max_length=100)
+    referrer: str = Field(default="", max_length=300)
+
+
 class InstallModuleIn(BaseModel):
     repo_url: str = Field(min_length=10, max_length=300)
     ref: str = Field(default="", max_length=100)

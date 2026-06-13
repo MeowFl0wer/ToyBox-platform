@@ -1,0 +1,66 @@
+# ToyBox 主站生产部署（架构文档第 17 章）
+# 用法：
+#   cd deploy && cp .env.example .env && 编辑 .env
+#   docker compose up -d --build
+#
+# 说明：
+# - db    ：PostgreSQL，保存主站 main_db 及各模块独立 database。
+# - backend：主站后端（FastAPI）。docker 部署模式下需访问 docker.sock 来构建/运行模块容器，
+#            并通过共享 data 卷把模块前端产物交给 web 托管。
+# - web   ：Nginx，托管主站前端 + /module-assets 模块前端，并把 /api 反代到 backend。
+# - 模块容器由 backend 在安装时创建，加入 toybox_net 内部网络、不暴露公网端口。
+name: toybox
+
+services:
+  db:
+    image: postgres:16
+    container_name: toybox-postgres        # backend 用 docker exec 此名建模块库；模块用此名连库
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: main_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks: [toybox_net]
+
+  backend:
+    build:
+      context: ..
+      dockerfile: deploy/backend.Dockerfile
+    container_name: toybox-backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TOYBOX_DB_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@toybox-postgres:5432/main_db
+      TOYBOX_DEPLOY_MODE: docker
+      TOYBOX_DOCKER_NETWORK: toybox_net
+      TOYBOX_POSTGRES_CONTAINER: toybox-postgres
+      TOYBOX_POSTGRES_SUPERUSER: postgres
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # 仅 backend 需要（构建/运行模块容器）
+      - data:/app/server/data                        # 模块源码/前端产物/密钥持久化（与 web 共享）
+    depends_on: [db]
+    networks: [toybox_net]
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+    container_name: toybox-web
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      # - "443:443"   # 配置 TLS 后启用
+    volumes:
+      - data:/var/www:ro      # 提供 /module-assets（= data/modules/assets）
+    depends_on: [backend]
+    networks: [toybox_net]
+
+volumes:
+  pgdata:
+  data:
+
+networks:
+  toybox_net:
+    name: toybox_net          # 固定名，backend 创建模块容器时 --network toybox_net 需与此一致

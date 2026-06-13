@@ -1,0 +1,12 @@
+.git
+.backup-before-animation
+node_modules
+dist
+server/.venv
+server/data
+**/__pycache__
+**/.venv
+**/node_modules
+module-template/frontend/dist
+*.log
+.DS_Store

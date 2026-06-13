@@ -1,23 +1,30 @@
-"""模块安装 / 部署流水线 + 运行进程管理（开发态：本地进程方式，无需 Docker）。
+"""模块安装 / 部署流水线 + 运行管理。
 
-链路：后台填仓库地址 → clone → 读 module.yaml 校验 → 构建前端（产物挂到 assets）
-      →（本地方式）建模块独立 venv 装依赖、按需建库迁移 → 起后端进程 → /health 健康检查 → 注册上线。
+可插拔 Runner（按 TOYBOX_DEPLOY_MODE 选择）：
+  - LocalRunner（local，默认）：模块独立 venv + uvicorn 子进程；模块库用 SQLite。开发态可跑、无需 Docker。
+    用 pidfile 记录子进程，主站重启时先清理上一批孤儿进程，杜绝端口泄漏。
+  - DockerRunner（docker，生产）：docker build 镜像 → 在 Postgres 实例建模块独立 database/user →
+    （如需）容器内执行 alembic 迁移 → docker run 加入内部网络（不暴露公网端口）→ 健康检查。
 
-生产可换 Docker 方式（docker build / docker run），网关只认 internal_backend_url，与运行方式无关。
-进程注册表在内存中；主站重启后会自动重新拉起 active 模块。
+链路（runner 无关的部分共享）：clone → 读 module.yaml 校验 → 构建前端(挂 /module-assets)
+  → runner.deploy（建后端 + 建库迁移 + 起服务）→ /health 健康检查 → 注册上线。
+网关只认 internal_backend_url，与运行方式无关。
 """
 from __future__ import annotations
 
 import logging
 import os
 import re
+import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
 import urllib.request
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,7 +46,7 @@ for _d in (STAGING, INSTALLED, ASSETS):
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
-# module_id -> {"proc": Popen, "port": int}
+# 本地方式：module_id -> {"proc": Popen, "port": int}
 _procs: dict[str, dict] = {}
 _lock = threading.Lock()
 
@@ -82,61 +89,6 @@ def _validate_manifest(m: dict) -> str:
     return str(mid)
 
 
-# ---------- 进程管理 ----------
-def stop_module(module_id: str) -> None:
-    with _lock:
-        info = _procs.pop(module_id, None)
-    if info and info["proc"].poll() is None:
-        info["proc"].terminate()
-        try:
-            info["proc"].wait(timeout=8)
-        except subprocess.TimeoutExpired:
-            info["proc"].kill()
-
-
-def module_port(module_id: str) -> int | None:
-    info = _procs.get(module_id)
-    if info and info["proc"].poll() is None:
-        return info["port"]
-    return None
-
-
-def _ensure_backend(dest: Path, manifest: dict, logs: list[str]) -> Path:
-    """确保模块独立 venv 并装好依赖，返回 venv 路径。"""
-    be_dir = dest / "source" / "backend"
-    venv = dest / ".venv"
-    if not (venv / "bin" / "uvicorn").exists():
-        _run([sys.executable, "-m", "venv", str(venv)], None, logs, timeout=120)
-        req = be_dir / "requirements.txt"
-        if req.exists():
-            _run([str(venv / "bin" / "pip"), "install", "-q", "-r", str(req)], None, logs, timeout=900)
-    return venv
-
-
-def _start_backend_process(module_id: str, dest: Path, manifest: dict) -> tuple[int, str]:
-    """启动模块后端 uvicorn 子进程，返回 (port, internal_url)。"""
-    be_dir = dest / "source" / "backend"
-    venv = dest / ".venv"
-    env = os.environ.copy()
-    env["MODULE_ID"] = module_id
-    env["MODULE_SIGN_KEY"] = settings.module_sign_key
-    if (manifest.get("database") or {}).get("enabled"):
-        env["DATABASE_URL"] = f"sqlite:///{(dest / 'module.db').as_posix()}"
-    stop_module(module_id)  # 先停旧进程（自身会取锁，故必须在加锁之前调用）
-    port = _free_port()
-    logf = open(dest / "backend.log", "a")  # noqa: SIM115
-    proc = subprocess.Popen(
-        [str(venv / "bin" / "uvicorn"), "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
-        cwd=str(be_dir),
-        env=env,
-        stdout=logf,
-        stderr=subprocess.STDOUT,
-    )
-    with _lock:
-        _procs[module_id] = {"proc": proc, "port": port}
-    return port, f"http://127.0.0.1:{port}"
-
-
 def _health_ok(internal_url: str, health_path: str, tries: int = 30) -> bool:
     for _ in range(tries):
         time.sleep(1)
@@ -147,6 +99,234 @@ def _health_ok(internal_url: str, health_path: str, tries: int = 30) -> bool:
         except Exception:  # noqa: BLE001
             pass
     return False
+
+
+@dataclass
+class DeployCtx:
+    module_id: str
+    manifest: dict
+    dest: Path  # installed/<id>
+    logs: list[str] = field(default_factory=list)
+
+    @property
+    def src(self) -> Path:
+        return self.dest / "source"
+
+    @property
+    def backend_dir(self) -> Path:
+        return self.src / "backend"
+
+    @property
+    def db_enabled(self) -> bool:
+        return bool((self.manifest.get("database") or {}).get("enabled"))
+
+    @property
+    def health_path(self) -> str:
+        return str((self.manifest.get("backend") or {}).get("health_path", "/health"))
+
+    @property
+    def version(self) -> str:
+        return str(self.manifest.get("version", "latest"))
+
+
+# ======================= LocalRunner（本地进程） =======================
+class LocalRunner:
+    name = "local"
+
+    def _pidfile(self, module_id: str) -> Path:
+        return INSTALLED / module_id / "backend.pid"
+
+    def _ensure_venv(self, ctx: DeployCtx) -> Path:
+        venv = ctx.dest / ".venv"
+        if not (venv / "bin" / "uvicorn").exists():
+            _run([sys.executable, "-m", "venv", str(venv)], None, ctx.logs, timeout=120)
+            req = ctx.backend_dir / "requirements.txt"
+            if req.exists():
+                _run([str(venv / "bin" / "pip"), "install", "-q", "-r", str(req)], None, ctx.logs, timeout=900)
+        return venv
+
+    def _db_url(self, ctx: DeployCtx) -> str | None:
+        return f"sqlite:///{(ctx.dest / 'module.db').as_posix()}" if ctx.db_enabled else None
+
+    def _migrate(self, ctx: DeployCtx, db_url: str) -> None:
+        alembic_dir = ctx.backend_dir / "alembic"
+        if not alembic_dir.exists():
+            return
+        env = os.environ.copy()
+        env["DATABASE_URL"] = db_url
+        env["MODULE_ID"] = ctx.module_id
+        try:
+            subprocess.run([str(ctx.dest / ".venv" / "bin" / "alembic"), "upgrade", "head"],
+                           cwd=str(ctx.backend_dir), env=env, capture_output=True, text=True, timeout=300)
+        except Exception as e:  # noqa: BLE001
+            ctx.logs.append(f"迁移告警：{e}")
+
+    def _start_proc(self, ctx: DeployCtx, db_url: str | None) -> str:
+        self.stop(ctx.module_id)  # 先停旧进程/孤儿（必须在加锁前）
+        venv = ctx.dest / ".venv"
+        env = os.environ.copy()
+        env["MODULE_ID"] = ctx.module_id
+        env["MODULE_SIGN_KEY"] = settings.module_sign_key
+        if db_url:
+            env["DATABASE_URL"] = db_url
+        port = _free_port()
+        logf = open(ctx.dest / "backend.log", "a")  # noqa: SIM115
+        proc = subprocess.Popen(
+            [str(venv / "bin" / "uvicorn"), "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
+            cwd=str(ctx.backend_dir), env=env, stdout=logf, stderr=subprocess.STDOUT,
+        )
+        self._pidfile(ctx.module_id).write_text(str(proc.pid))
+        with _lock:
+            _procs[ctx.module_id] = {"proc": proc, "port": port}
+        return f"http://127.0.0.1:{port}"
+
+    def deploy(self, ctx: DeployCtx) -> str:
+        self._ensure_venv(ctx)
+        db_url = self._db_url(ctx)
+        if db_url:
+            self._migrate(ctx, db_url)
+        return self._start_proc(ctx, db_url)
+
+    def ensure_running(self, ctx: DeployCtx) -> str:
+        return self.deploy(ctx)  # 本地：重启进程即可（venv 已存在则跳过装依赖）
+
+    def stop(self, module_id: str) -> None:
+        with _lock:
+            info = _procs.pop(module_id, None)
+        if info and info["proc"].poll() is None:
+            info["proc"].terminate()
+            try:
+                info["proc"].wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                info["proc"].kill()
+        # 兜底：按 pidfile 杀掉可能残留的孤儿进程（如主站重启后）
+        pidf = self._pidfile(module_id)
+        if pidf.exists():
+            try:
+                pid = int(pidf.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+            except (ProcessLookupError, ValueError, PermissionError):
+                pass
+            pidf.unlink(missing_ok=True)
+
+    def cleanup_stale(self) -> None:
+        """主站启动时清理上一批遗留的模块子进程（pidfile），杜绝端口泄漏。"""
+        for pidf in INSTALLED.glob("*/backend.pid"):
+            try:
+                pid = int(pidf.read_text().strip())
+                os.kill(pid, signal.SIGTERM)
+                log.info("清理遗留模块进程 pid=%s (%s)", pid, pidf.parent.name)
+            except (ProcessLookupError, ValueError, PermissionError):
+                pass
+            except Exception:  # noqa: BLE001
+                pass
+            pidf.unlink(missing_ok=True)
+        with _lock:
+            _procs.clear()
+
+
+# ======================= DockerRunner（生产） =======================
+class DockerRunner:
+    name = "docker"
+
+    def _safe(self, mid: str) -> str:
+        return mid.replace("-", "_")
+
+    def _image(self, ctx: DeployCtx) -> str:
+        return f"{settings.module_image_prefix}{ctx.module_id}:{ctx.version}"
+
+    def _container(self, module_id: str) -> str:
+        return f"{settings.module_container_prefix}{module_id}"
+
+    def _db_name(self, mid: str) -> str:
+        return f"module_{self._safe(mid)}_db"
+
+    def _db_user(self, mid: str) -> str:
+        return f"module_{self._safe(mid)}_user"
+
+    def _internal_port(self, ctx: DeployCtx) -> int:
+        return int((ctx.manifest.get("backend") or {}).get("internal_port", 8000))
+
+    def _psql(self, sql: str, ctx: DeployCtx) -> None:
+        _run(["docker", "exec", settings.postgres_container, "psql", "-U", settings.postgres_superuser,
+              "-v", "ON_ERROR_STOP=0", "-c", sql], None, ctx.logs, timeout=60)
+
+    def _provision_db(self, ctx: DeployCtx) -> str | None:
+        if not ctx.db_enabled:
+            return None
+        mid = ctx.module_id
+        db, user = self._db_name(mid), self._db_user(mid)
+        pw_file = ctx.dest / "db_password"
+        pw = pw_file.read_text().strip() if pw_file.exists() else secrets.token_urlsafe(24)
+        # 幂等创建（已存在则忽略报错）；生产建议改用 module_secrets 加密存储密码
+        self._psql(f"DO $$ BEGIN CREATE ROLE {user} LOGIN PASSWORD '{pw}'; EXCEPTION WHEN duplicate_object THEN NULL; END $$;", ctx)
+        r = subprocess.run(["docker", "exec", settings.postgres_container, "psql", "-U", settings.postgres_superuser,
+                            "-tAc", f"SELECT 1 FROM pg_database WHERE datname='{db}'"], capture_output=True, text=True)
+        if r.stdout.strip() != "1":
+            self._psql(f"CREATE DATABASE {db} OWNER {user};", ctx)
+        self._psql(f"GRANT ALL PRIVILEGES ON DATABASE {db} TO {user};", ctx)
+        pw_file.write_text(pw)
+        pw_file.chmod(0o600)
+        return f"postgresql://{user}:{pw}@{settings.postgres_container}:5432/{db}"
+
+    def _build_image(self, ctx: DeployCtx) -> None:
+        df = str((ctx.manifest.get("backend") or {}).get("dockerfile", "backend/Dockerfile"))
+        build_ctx = (ctx.src / df).parent
+        _run(["docker", "build", "-t", self._image(ctx), "-f", str(ctx.src / df), str(build_ctx)], None, ctx.logs, timeout=1800)
+
+    def _migrate(self, ctx: DeployCtx, db_url: str) -> None:
+        if not (ctx.backend_dir / "alembic").exists():
+            return
+        _run(["docker", "run", "--rm", "--network", settings.docker_network,
+              "-e", f"DATABASE_URL={db_url}", "-e", f"MODULE_ID={ctx.module_id}",
+              "-e", f"MODULE_SIGN_KEY={settings.module_sign_key}",
+              self._image(ctx), "alembic", "upgrade", "head"], None, ctx.logs, timeout=600)
+
+    def deploy(self, ctx: DeployCtx) -> str:
+        self._build_image(ctx)
+        db_url = self._provision_db(ctx)
+        if db_url:
+            self._migrate(ctx, db_url)
+        cont = self._container(ctx.module_id)
+        subprocess.run(["docker", "rm", "-f", cont], capture_output=True, text=True)
+        env_args = ["-e", f"MODULE_ID={ctx.module_id}", "-e", f"MODULE_SIGN_KEY={settings.module_sign_key}"]
+        if db_url:
+            env_args += ["-e", f"DATABASE_URL={db_url}"]
+        # 不暴露公网端口，仅加入内部网络，主站网关按容器名访问
+        _run(["docker", "run", "-d", "--name", cont, "--network", settings.docker_network,
+              "--restart", "unless-stopped", *env_args, self._image(ctx)], None, ctx.logs, timeout=120)
+        return f"http://{cont}:{self._internal_port(ctx)}"
+
+    def ensure_running(self, ctx: DeployCtx) -> str:
+        cont = self._container(ctx.module_id)
+        r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", cont], capture_output=True, text=True)
+        if r.returncode == 0 and r.stdout.strip() != "true":
+            subprocess.run(["docker", "start", cont], capture_output=True, text=True)  # 容器存在但停了 → 启动
+        elif r.returncode != 0:
+            return self.deploy(ctx)  # 容器不存在 → 重新部署
+        return f"http://{cont}:{self._internal_port(ctx)}"
+
+    def stop(self, module_id: str) -> None:
+        subprocess.run(["docker", "rm", "-f", self._container(module_id)], capture_output=True, text=True)
+
+    def cleanup_stale(self) -> None:
+        # Docker 容器以 --restart unless-stopped 独立存活，主站重启无需清理
+        pass
+
+
+def get_runner():
+    return DockerRunner() if settings.deploy_mode == "docker" else LocalRunner()
+
+
+RUNNER = get_runner()
+
+
+def stop_module(module_id: str) -> None:
+    RUNNER.stop(module_id)
+
+
+def _ctx(module_id: str, manifest: dict) -> DeployCtx:
+    return DeployCtx(module_id=module_id, manifest=manifest, dest=INSTALLED / module_id)
 
 
 def _register(db: Session, manifest: dict, mid: str, internal_url: str, source_url: str, source_ref: str) -> None:
@@ -218,28 +398,27 @@ def _run_job(job_id: str) -> None:
         mid = _validate_manifest(manifest)
         job.module_id = mid
         db.commit()
-
         existing = db.query(InstalledModule).filter(InstalledModule.module_id == mid).first()
         if existing and existing.builtin:
             raise RuntimeError(f"已存在同名内置模块 {mid}，不能覆盖")
 
-        # 落地到 installed/<id>/source
+        # 落地 installed/<id>/source
         dest = INSTALLED / mid
-        stop_module(mid)
+        RUNNER.stop(mid)
         if dest.exists():
             shutil.rmtree(dest)
         dest.mkdir(parents=True)
         shutil.move(str(staging), str(dest / "source"))
-        src = dest / "source"
+        ctx = DeployCtx(module_id=mid, manifest=manifest, dest=dest, logs=logs)
 
         # 3) 构建前端 → assets/<id>
         fd = str((manifest.get("entry") or {}).get("frontend_dist", "frontend/dist"))
-        fe_dir = src / "frontend"
+        fe_dir = ctx.src / "frontend"
         if fe_dir.exists():
             _set(db, job, "building_frontend", logs)
             _run(["npm", "install", "--no-audit", "--no-fund", "--silent"], str(fe_dir), logs, timeout=900)
             _run(["npm", "run", "build"], str(fe_dir), logs, timeout=900)
-            dist = src / fd
+            dist = ctx.src / fd
             if not dist.exists():
                 raise RuntimeError(f"前端构建产物不存在：{fd}")
             asset_dir = ASSETS / mid
@@ -247,36 +426,24 @@ def _run_job(job_id: str) -> None:
                 shutil.rmtree(asset_dir)
             shutil.copytree(dist, asset_dir)
 
-        # 4) 后端：建 venv 装依赖（+ 可选迁移）→ 起进程 → 健康检查
+        # 4) runner 部署后端（建后端/镜像 + 建库迁移 + 起服务）→ 健康检查
         internal_url = ""
-        be = manifest.get("backend") or {}
-        if be.get("enabled"):
+        if (manifest.get("backend") or {}).get("enabled"):
             _set(db, job, "building_backend", logs)
-            _ensure_backend(dest, manifest, logs)
-            if (manifest.get("database") or {}).get("enabled"):
-                _set(db, job, "migrating", logs)
-                alembic_dir = src / "backend" / "alembic"
-                if alembic_dir.exists():
-                    try:
-                        env = os.environ.copy()
-                        env["DATABASE_URL"] = f"sqlite:///{(dest / 'module.db').as_posix()}"
-                        subprocess.run([str(dest / ".venv" / "bin" / "alembic"), "upgrade", "head"],
-                                       cwd=str(src / "backend"), env=env, capture_output=True, text=True, timeout=300)
-                    except Exception as e:  # noqa: BLE001
-                        logs.append(f"迁移告警：{e}")
+            logs.append(f"[runner={RUNNER.name}] 开始部署后端")
             _set(db, job, "starting_container", logs)
-            _, internal_url = _start_backend_process(mid, dest, manifest)
+            internal_url = RUNNER.deploy(ctx)
             _set(db, job, "health_checking", logs)
-            if not _health_ok(internal_url, str(be.get("health_path", "/health"))):
+            if not _health_ok(internal_url, ctx.health_path):
                 raise RuntimeError("模块健康检查失败（/health 未在限时内返回 200）")
 
         # 5) 注册上线
         _register(db, manifest, mid, internal_url, job.source_url, job.source_ref)
-        logs.append(f"✓ 模块 {mid} 已部署上线")
+        logs.append(f"✓ 模块 {mid} 已部署上线（{RUNNER.name}）")
         _set(db, job, "success", logs)
         job.finished_at = _now()
         db.commit()
-        log.info("模块 %s 安装成功", mid)
+        log.info("模块 %s 安装成功（%s）", mid, RUNNER.name)
     except Exception as e:  # noqa: BLE001
         logs.append(f"ERROR: {e}")
         _set(db, job, "failed", logs, error=str(e))
@@ -288,15 +455,16 @@ def _run_job(job_id: str) -> None:
 
 
 def uninstall_module(module_id: str) -> None:
-    """停进程并删除安装目录与前端资源。"""
-    stop_module(module_id)
+    """停服务（进程/容器）并删除安装目录与前端资源。"""
+    RUNNER.stop(module_id)
     for p in (INSTALLED / module_id, ASSETS / module_id):
         if p.exists():
             shutil.rmtree(p, ignore_errors=True)
 
 
 def relaunch_active_modules() -> None:
-    """主站启动时重新拉起所有 active 的已安装模块后端。"""
+    """主站启动时：先清理遗留进程（防端口泄漏），再重新拉起 active 已安装模块。"""
+    RUNNER.cleanup_stale()
     db = SessionLocal()
     try:
         mods = (
@@ -305,16 +473,14 @@ def relaunch_active_modules() -> None:
             .all()
         )
         for m in mods:
-            dest = INSTALLED / m.module_id
-            if not (dest / "source" / "backend").exists() or not m.manifest:
+            if not m.manifest or not (m.manifest.get("backend") or {}).get("enabled"):
                 continue
-            if not (m.manifest.get("backend") or {}).get("enabled"):
+            if not (INSTALLED / m.module_id / "source" / "backend").exists():
                 continue
             try:
-                logs: list[str] = []
-                _ensure_backend(dest, m.manifest, logs)
-                _, internal_url = _start_backend_process(m.module_id, dest, m.manifest)
-                if _health_ok(internal_url, str((m.manifest.get("backend") or {}).get("health_path", "/health")), tries=20):
+                ctx = _ctx(m.module_id, m.manifest)
+                internal_url = RUNNER.ensure_running(ctx)
+                if _health_ok(internal_url, ctx.health_path, tries=20):
                     m.internal_backend_url = internal_url
                     db.commit()
                     log.info("重新拉起模块 %s -> %s", m.module_id, internal_url)

@@ -30,6 +30,21 @@ bash run.sh          # 首次会自动建 venv 并装依赖，然后启动
   Pydantic 强校验 + 文本清洗、富文本/Markdown 用 bleach 白名单防 XSS、ORM 参数化查询防注入、安全响应头、CORS 白名单、管理操作审计。
 - **统一响应**：`{ "code", "message", "data" }`，错误码见架构文档 14.5。
 
+## 模块安装 / 部署
+
+后台「模块部署」填 GitHub 仓库地址 → `clone` → 读 `module.yaml` 校验 → 构建前端（挂 `/module-assets`）
+→ 部署后端 → `/health` 健康检查 → 注册上线。前端经 iframe 承载，业务 API 走网关
+`/api/modules/{id}/*`（鉴权 + HMAC 签名用户上下文转发，与模块模板一致）。
+
+部署方式可插拔（`TOYBOX_DEPLOY_MODE`）：
+
+- **local（默认，开发）**：模块独立 venv + uvicorn 子进程；模块库用 SQLite。无需 Docker，本机可跑。
+  用 pidfile 记录子进程，主站重启时先清理上一批进程，避免端口泄漏。
+- **docker（生产）**：`docker build` 镜像 → 在 Postgres 实例建模块独立 `database`/`user` →（如需）容器内
+  `alembic upgrade head` → `docker run` 加入内部网络 `TOYBOX_DOCKER_NETWORK`（不暴露公网端口）→ 健康检查。
+  需主站后端容器与模块容器同处该网络；建库通过 `docker exec <TOYBOX_POSTGRES_CONTAINER> psql` 执行。
+  数据库命名遵循架构文档 9.1：`module_<id>_db` / `module_<id>_user`（`-` 转 `_`）。
+
 ## 主要接口
 
 ```

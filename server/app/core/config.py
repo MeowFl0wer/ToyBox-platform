@@ -45,6 +45,14 @@ class Settings(BaseSettings):
 
     db_url: str = f"sqlite:///{(DATA_DIR / 'main.db').as_posix()}"
 
+    # 模块部署方式：local（本地进程，开发态，无需 Docker）| docker（生产，构建镜像+容器+独立 Postgres 库）
+    deploy_mode: str = "local"
+    docker_network: str = "toybox_net"          # 模块容器加入的内部网络
+    postgres_container: str = "postgres"        # 用于 docker exec psql 建库的 Postgres 容器名
+    postgres_superuser: str = "postgres"
+    module_image_prefix: str = "toybox-module-"
+    module_container_prefix: str = "toybox-module-"
+
     # 允许的前端来源（携带 Cookie，必须显式列出，不能用 *）
     cors_origins: list[str] = [
         "http://localhost:5173",

@@ -1,0 +1,52 @@
+# 模块清单（架构文档 7.3）。主站安装时读取此文件做校验、构建与注册。
+apiVersion: personal-tools/v1
+id: welcome
+name: 欢迎小屋
+description: 登录后向你问好的示例模块（同时作为模块开发模板）
+version: 1.0.0
+category: 工具
+icon: hand-heart
+
+source:
+  type: github
+
+compatibility:
+  main_api: ">=1.0.0 <2.0.0"
+  module_sdk: ">=1.0.0 <2.0.0"
+
+entry:
+  type: iframe
+  path: /tools/welcome
+  frontend_dist: frontend/dist
+
+display:
+  mode: embedded
+  allow_fullscreen: true
+  allow_new_window: true
+  min_width: 640
+  min_height: 420
+
+backend:
+  enabled: true
+  type: fastapi
+  dockerfile: backend/Dockerfile
+  internal_port: 8000
+  health_path: /health
+
+# 本模块无需数据库；需要时改为 enabled: true 并提供 backend/alembic 迁移（见 README）
+database:
+  enabled: false
+
+auth:
+  required: true              # 需要登录：未登录不能进入，主站网关会鉴权
+  user_context: signed_header # 通过主站签名 Header 获取当前用户
+  anonymous_persistence: false
+
+permissions:
+  - welcome:read
+
+features:
+  supports_settings: false
+  supports_upload: false
+  supports_export: false
+  supports_history: false

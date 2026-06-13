@@ -23,7 +23,7 @@ pnpm-debug.log*
 *.swp
 
 # 后端：Python 虚拟环境、数据库、密钥（仅本地，不入库）
-server/.venv/
+.venv/
 server/data/
 __pycache__/
 *.pyc

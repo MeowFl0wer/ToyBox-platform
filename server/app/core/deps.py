@@ -15,7 +15,13 @@ REFRESH_COOKIE = "toybox_refresh"
 
 
 def get_client_ip(request: Request) -> str:
-    # 直连场景取 client.host；若经反代，可改读 X-Forwarded-For（需信任代理）
+    # 经可信反代时读 X-Forwarded-For 的首个 IP（供限流按真实客户端聚合）；否则取直连 IP
+    from .config import settings
+
+    if settings.trust_proxy:
+        xff = request.headers.get("X-Forwarded-For", "")
+        if xff:
+            return xff.split(",")[0].strip()
     return request.client.host if request.client else ""
 
 

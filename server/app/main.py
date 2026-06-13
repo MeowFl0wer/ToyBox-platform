@@ -79,8 +79,25 @@ def health():
     return {"code": 0, "message": "ok", "data": {"status": "up"}}
 
 
+def _check_production_config() -> None:
+    """生产模式（dev_mode=false）发现不安全的默认值则拒绝启动。"""
+    if settings.dev_mode:
+        return
+    problems = []
+    if settings.admin_password == "Admin@12345":
+        problems.append("默认管理员密码")
+    for value, name in ((settings.secret_key, "SECRET_KEY"), (settings.module_sign_key, "MODULE_SIGN_KEY")):
+        if "change-me" in value or "change-this" in value:
+            problems.append(f"占位的 {name}")
+    if problems:
+        raise RuntimeError(
+            "生产模式检测到不安全的默认配置：" + "、".join(problems) + "。请通过环境变量设置强随机值后再启动。"
+        )
+
+
 @app.on_event("startup")
 def _startup():
+    _check_production_config()
     run_seed()
     # 后台重新拉起已安装的 active 模块（建 venv/健康检查较慢，放线程不阻塞启动）
     threading.Thread(target=modules_runtime.relaunch_active_modules, daemon=True).start()

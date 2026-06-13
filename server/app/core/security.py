@@ -91,17 +91,25 @@ def constant_time_eq(a: str, b: str) -> bool:
 
 
 # ---------- 模块用户上下文签名（架构文档 10.2）----------
-def build_module_user_headers(module_id: str, payload: dict) -> dict[str, str]:
-    """生成主站网关转发给模块后端的签名 Header。
+def module_sign_key_for(module_id: str) -> str:
+    """每个模块的独立签名密钥 = HMAC(主密钥, module_id)。
 
-    方案与模块模板 backend/app/core/auth.py 的校验完全一致：
-      X-PT-User-Context   = base64url(json，紧凑、key 排序)
-      X-PT-User-Signature = hmac_sha256_hex(MODULE_SIGN_KEY, X-PT-User-Context)
-    （Module Gateway 实现后调用此函数；现在先与模块模板对齐，避免接口弄错。）
+    避免把同一个全局密钥下发给所有模块——这样即使某模块拿到自己的密钥，
+    也无法伪造其它模块/用户的上下文（不同 module_id 派生出不同密钥）。
+    主站签名用此 key，模块的 MODULE_SIGN_KEY env 也注入同一派生 key，验签方案不变。
     """
+    return hmac.new(settings.module_sign_key.encode("utf-8"), module_id.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def build_module_user_headers(module_id: str, payload: dict) -> dict[str, str]:
+    """生成主站网关转发给模块后端的签名 Header（方案与模块模板 auth.py 一致）：
+      X-PT-User-Context   = base64url(json，紧凑、key 排序)
+      X-PT-User-Signature = hmac_sha256_hex(本模块派生密钥, X-PT-User-Context)
+    """
+    key = module_sign_key_for(module_id)
     ctx_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
     ctx_b64 = base64.urlsafe_b64encode(ctx_json.encode("utf-8")).decode("utf-8").rstrip("=")
-    sig = hmac.new(settings.module_sign_key.encode("utf-8"), ctx_b64.encode("utf-8"), hashlib.sha256).hexdigest()
+    sig = hmac.new(key.encode("utf-8"), ctx_b64.encode("utf-8"), hashlib.sha256).hexdigest()
     return {
         "X-PT-Module-Id": module_id,
         "X-PT-User-Context": ctx_b64,

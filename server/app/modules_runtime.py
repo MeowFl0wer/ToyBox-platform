@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 
 from .core.config import DATA_DIR, settings
 from .core.database import SessionLocal
+from .core.security import module_sign_key_for
 from .models import InstalledModule, InstallJob
 
 log = logging.getLogger("toybox.deploy")
@@ -166,7 +167,7 @@ class LocalRunner:
         venv = ctx.dest / ".venv"
         env = os.environ.copy()
         env["MODULE_ID"] = ctx.module_id
-        env["MODULE_SIGN_KEY"] = settings.module_sign_key
+        env["MODULE_SIGN_KEY"] = module_sign_key_for(ctx.module_id)  # 每模块独立密钥
         if db_url:
             env["DATABASE_URL"] = db_url
         port = _free_port()
@@ -285,7 +286,7 @@ class DockerRunner:
             return
         _run(["docker", "run", "--rm", "--network", settings.docker_network,
               "-e", f"DATABASE_URL={db_url}", "-e", f"MODULE_ID={ctx.module_id}",
-              "-e", f"MODULE_SIGN_KEY={settings.module_sign_key}",
+              "-e", f"MODULE_SIGN_KEY={module_sign_key_for(ctx.module_id)}",
               self._image(ctx), "alembic", "upgrade", "head"], None, ctx.logs, timeout=600)
 
     def deploy(self, ctx: DeployCtx) -> str:
@@ -295,7 +296,7 @@ class DockerRunner:
             self._migrate(ctx, db_url)
         cont = self._container(ctx.module_id)
         subprocess.run(["docker", "rm", "-f", cont], capture_output=True, text=True)
-        env_args = ["-e", f"MODULE_ID={ctx.module_id}", "-e", f"MODULE_SIGN_KEY={settings.module_sign_key}"]
+        env_args = ["-e", f"MODULE_ID={ctx.module_id}", "-e", f"MODULE_SIGN_KEY={module_sign_key_for(ctx.module_id)}"]
         if db_url:
             env_args += ["-e", f"DATABASE_URL={db_url}"]
         # 不暴露公网端口，仅加入内部网络，主站网关按容器名访问

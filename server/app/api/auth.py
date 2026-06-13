@@ -140,7 +140,9 @@ def _set_refresh_cookie(response: Response, raw: str) -> None:
     response.set_cookie(
         REFRESH_COOKIE, raw,
         max_age=settings.refresh_token_ttl_days * 86400,
-        httponly=True, samesite="lax", secure=False, path=COOKIE_PATH,
+        httponly=True, samesite="lax",
+        secure=not settings.dev_mode,  # 生产（dev_mode=false，HTTPS）强制 Secure；开发 http 下为 False
+        path=COOKIE_PATH,
     )
 
 

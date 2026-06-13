@@ -72,11 +72,11 @@ def run_seed() -> None:
                 status="active",
             )
             db.add(admin)
-            log.warning(
-                "已创建默认管理员：用户名=%s 密码=%s（请尽快修改）",
-                settings.admin_username,
-                settings.admin_password,
-            )
+            if settings.dev_mode:
+                log.warning("已创建默认管理员：用户名=%s 密码=%s（开发态显示，请尽快修改）",
+                            settings.admin_username, settings.admin_password)
+            else:
+                log.warning("已创建管理员 %s（密码取自环境变量）", settings.admin_username)
 
         # 模块注册表
         for m in _MODULES:

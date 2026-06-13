@@ -65,6 +65,11 @@ class Settings(BaseSettings):
         "http://localhost:4173",
     ]
 
+    # 反代后取真实客户端 IP（生产经 Nginx 时设 true 以读 X-Forwarded-For，供限流按客户端聚合）
+    trust_proxy: bool = False
+    # 模块来源白名单（GitHub owner 列表，空=不限制）。建议生产只允许自己的账号/组织。
+    module_source_allowlist: list[str] = []
+
     # 初始管理员（首次启动自动创建，请尽快在设置里改密码）
     admin_username: str = "admin"
     admin_email: str = "admin@toybox.local"

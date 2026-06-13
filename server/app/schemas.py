@@ -117,10 +117,15 @@ class InstallModuleIn(BaseModel):
     @field_validator("repo_url")
     @classmethod
     def _repo(cls, v: str) -> str:
+        from .core.config import settings
+
         v = v.strip()
         # 只允许 https 的 GitHub 仓库地址（架构文档 19.1：限制可信来源）
         if not v.startswith("https://github.com/"):
             raise ValueError("仅支持 https://github.com/ 开头的仓库地址")
+        owner = v[len("https://github.com/"):].split("/")[0]
+        if settings.module_source_allowlist and owner not in settings.module_source_allowlist:
+            raise ValueError(f"仓库来源 {owner} 不在允许的白名单内")
         return v
 
 

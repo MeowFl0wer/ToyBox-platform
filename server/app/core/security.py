@@ -1,0 +1,136 @@
+"""安全相关：密码哈希、JWT、验证码、模块上下文签名、输入清洗。
+
+加固要点：
+- 密码用 bcrypt 加盐哈希；登录失败信息统一、不泄露账号是否存在
+- JWT 短期 access + 区分 token 类型；refresh 走 HttpOnly Cookie（在 api 层设置）
+- 验证码只存哈希、限次、限时、一次性
+- 所有可入库文本统一清洗控制字符并限长；富文本/Markdown 用 bleach 白名单清洗，防 XSS
+- 比对敏感值用恒定时间比较，防时序攻击
+"""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import re
+import secrets
+import time
+import unicodedata
+from datetime import datetime, timedelta, timezone
+
+import bcrypt
+import bleach
+import jwt
+
+from .config import settings
+
+# ---------- 密码 ----------
+_BCRYPT_MAX_BYTES = 72  # bcrypt 算法上限
+
+
+def hash_password(plain: str) -> str:
+    pw = plain.encode("utf-8")[:_BCRYPT_MAX_BYTES]
+    return bcrypt.hashpw(pw, bcrypt.gensalt(rounds=12)).decode("utf-8")
+
+
+def verify_password(plain: str, hashed: str) -> bool:
+    try:
+        return bcrypt.checkpw(plain.encode("utf-8")[:_BCRYPT_MAX_BYTES], hashed.encode("utf-8"))
+    except (ValueError, TypeError):
+        return False
+
+
+# ---------- JWT ----------
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def create_access_token(sub: str, role: str) -> str:
+    payload = {
+        "sub": sub,
+        "role": role,
+        "type": "access",
+        "iat": int(_now().timestamp()),
+        "exp": int((_now() + timedelta(minutes=settings.access_token_ttl_min)).timestamp()),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
+def decode_access_token(token: str) -> dict | None:
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+    except jwt.PyJWTError:
+        return None
+    if payload.get("type") != "access":
+        return None
+    return payload
+
+
+def new_refresh_token() -> str:
+    """不可猜测的随机 refresh token（明文给前端 Cookie，库里只存哈希）。"""
+    return secrets.token_urlsafe(48)
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# ---------- 验证码 ----------
+def new_verify_code() -> str:
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def hash_code(code: str) -> str:
+    # 加盐（用 secret_key 作为 pepper）后哈希
+    return hashlib.sha256(f"{settings.secret_key}:{code}".encode("utf-8")).hexdigest()
+
+
+def constant_time_eq(a: str, b: str) -> bool:
+    return hmac.compare_digest(a, b)
+
+
+# ---------- 模块用户上下文签名（架构文档 10.2）----------
+def sign_module_context(payload: dict) -> str:
+    raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return hmac.new(settings.module_sign_key.encode("utf-8"), raw, hashlib.sha256).hexdigest()
+
+
+# ---------- 输入清洗 / 校验 ----------
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
+
+
+def clean_text(value: str | None, max_len: int) -> str:
+    """去除控制字符、做 NFKC 归一化、trim、限长。用于昵称/简介等纯文本字段。"""
+    if value is None:
+        return ""
+    value = unicodedata.normalize("NFKC", value)
+    value = _CONTROL_RE.sub("", value).strip()
+    return value[:max_len]
+
+
+def sanitize_html(value: str, *, max_len: int = 20000) -> str:
+    """富文本/Markdown 入库或渲染前的 HTML 清洗（白名单），防 XSS。"""
+    cleaned = bleach.clean(
+        value[:max_len],
+        tags=["p", "br", "b", "strong", "i", "em", "u", "ul", "ol", "li", "a", "code", "pre", "blockquote", "h3", "h4"],
+        attributes={"a": ["href", "title"]},
+        protocols=["http", "https", "mailto"],
+        strip=True,
+    )
+    return bleach.linkify(cleaned) if cleaned else cleaned
+
+
+def strip_tags(value: str) -> str:
+    """彻底去除所有 HTML 标签，用于纯文本字段的纵深防御。"""
+    return bleach.clean(value, tags=[], attributes={}, strip=True)
+
+
+def is_safe_url(value: str) -> bool:
+    """头像等链接：仅允许 http(s) 或站内相对路径，挡 javascript: / data: 等。"""
+    if not value:
+        return True
+    v = value.strip().lower()
+    if v.startswith("/"):
+        return True
+    return v.startswith("http://") or v.startswith("https://")

@@ -22,4 +22,10 @@ pnpm-debug.log*
 .idea/
 *.swp
 
+# 后端：Python 虚拟环境、数据库、密钥（仅本地，不入库）
+server/.venv/
+server/data/
+__pycache__/
+*.pyc
+
 # 注意：.backup-before-animation/ 为有意保留的源码快照，不忽略

@@ -31,6 +31,13 @@ export default defineConfig({
     },
   },
 
+  // 开发时把 /api 代理到本地后端，避免跨域、让 HttpOnly Cookie 同源生效
+  server: {
+    proxy: {
+      '/api': { target: 'http://127.0.0.1:8000', changeOrigin: true },
+    },
+  },
+
   // File types to support raw imports. Never add .css, .tsx, or .ts files to this.
   assetsInclude: ['**/*.svg', '**/*.csv'],
 })

@@ -1,15 +1,11 @@
+import { useEffect, useState } from "react";
 import { ArrowRight, Bell, ChevronRight, Clock, Sparkles, Star, Zap } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 import { themePalettes, type ThemePalette } from "../theme";
 import { DoodleLayer, type DoodleSpec } from "./DoodleLayer";
 import { Reveal, CountUp } from "./anim";
-
-// 首页 Hero 顶部统计（数字会滚动递增）
-const HERO_STATS: [number, string][] = [
-  [12, "规划功能"],
-  [3, "可用工具"],
-  [1, "成长盒子"],
-];
+import { api, type ApiModule } from "../api/client";
+import { moduleEmoji } from "../api/moduleIcon";
 
 // q 版插画在首页 Hero 的布局
 const HOME_DOODLES: DoodleSpec[] = [
@@ -24,34 +20,37 @@ const HOME_DOODLES: DoodleSpec[] = [
 
 interface HomePageProps {
   onNavigate: (page: string) => void;
+  onOpenModule: (m: ApiModule) => void;
+  isLoggedIn: boolean;
+  onOpenAuth: () => void;
   palette: ThemePalette;
   activePaletteId: string;
   onPaletteChange: (paletteId: string) => void;
 }
 
-const getQuickFeatures = (palette: ThemePalette) => [
-  { emoji: "🎲", name: "随机选择器", desc: "纠结时轻轻一摇", bg: palette.cardTint, color: palette.primaryDark },
-  { emoji: "💡", name: "灵感生成器", desc: "把脑洞先收起来", bg: palette.softAlt, color: palette.primaryDark },
-  { emoji: "⏱️", name: "番茄计时器", desc: "留一段安静专注", bg: palette.soft, color: palette.accent },
-  { emoji: "🗺️", name: "地图足迹", desc: "慢慢点亮去过的地方", bg: `${palette.coral}22`, color: palette.coral },
-];
-
-const getComingSoonFeatures = (palette: ThemePalette) => [
-  { emoji: "🎮", name: "像素小游戏", desc: "轻松放松一下", tag: "娱乐", color: palette.purple, bg: `${palette.purple}18` },
-  { emoji: "📝", name: "随手记录", desc: "把灵感先记住", tag: "工具", color: palette.secondary, bg: palette.softAlt },
-  { emoji: "🎨", name: "调色板生成", desc: "做一组好看配色", tag: "创意", color: palette.coral, bg: `${palette.coral}18` },
-  { emoji: "🌤️", name: "天气诗歌", desc: "给天气加点想象", tag: "实验", color: palette.primaryDark, bg: palette.soft },
-];
-
 const updates = [
   { date: "2026-06-12", title: "ToyBox v1.0 上线", desc: "主站框架完成，开始慢慢装入新功能" },
-  { date: "2026-06-20", title: "随机选择器准备中", desc: "帮你在纠结时更快做决定" },
-  { date: "2026-07-01", title: "灵感生成器开发中", desc: "给想法一个随手落脚的地方" },
+  { date: "2026-06-20", title: "待办清单准备中", desc: "把要做的事一件件记下来" },
+  { date: "2026-07-01", title: "小本本开发中", desc: "给灵感一个随手落脚的地方" },
 ];
 
-export function HomePage({ onNavigate, palette, activePaletteId, onPaletteChange }: HomePageProps) {
-  const quickFeatures = getQuickFeatures(palette);
-  const comingSoonFeatures = getComingSoonFeatures(palette);
+export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, onPaletteChange }: HomePageProps) {
+  const [modules, setModules] = useState<ApiModule[]>([]);
+  useEffect(() => {
+    api.getModules().then(setModules).catch(() => {});
+  }, []);
+
+  const activeModules = modules.filter((m) => m.status === "active");
+  const comingSoonModules = modules.filter((m) => m.status === "coming_soon");
+  // 最常使用：优先收藏，其次按使用次数，最多 4 个
+  const mostUsed = [...activeModules]
+    .sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.use_count - a.use_count)
+    .slice(0, 4);
+  const heroStats: [number, string][] = [
+    [activeModules.length, "可用功能"],
+    [comingSoonModules.length, "即将上线"],
+    [modules.length, "全部模块"],
+  ];
 
   return (
     <div
@@ -102,7 +101,7 @@ export function HomePage({ onNavigate, palette, activePaletteId, onPaletteChange
                   palette={palette}
                 />
                 <div className="grid grid-cols-3 gap-2 text-center">
-                  {HERO_STATS.map(([value, label]) => (
+                  {heroStats.map(([value, label]) => (
                     <div
                       key={label}
                       className="rounded-lg px-3 py-2"
@@ -187,33 +186,34 @@ export function HomePage({ onNavigate, palette, activePaletteId, onPaletteChange
             </Reveal>
 
             <Reveal immediate delay={0.26}>
-            <div className="relative z-10 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4" style={{ transform: "translateY(-1cm)" }}>
-              {quickFeatures.map((f) => (
-                <button
-                  key={f.name}
-                  onClick={() => onNavigate("features")}
-                  className="rounded-lg p-4 text-left transition-all hover:-translate-y-0.5 active:translate-y-0"
-                  style={{
-                    background: "#FFFFFF",
-                    border: `1px solid ${palette.border}`,
-                    cursor: "pointer",
-                    boxShadow: "0 10px 24px rgba(20,117,150,0.08)",
-                  }}
-                >
-                  <div
-                    className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg text-xl"
-                    style={{ background: f.bg }}
-                  >
-                    {f.emoji}
+            <div className="relative z-10" style={{ transform: "translateY(-1cm)" }}>
+              {/* 最常使用：标注在四个功能前一行，左对齐 */}
+              <div className="mb-3 flex items-center gap-1.5" style={{ color: palette.primaryDark, fontSize: "13px", fontWeight: 900 }}>
+                <Star size={14} fill={palette.primary} style={{ color: palette.primary }} />
+                最常使用：
+              </div>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                {mostUsed.length === 0 ? (
+                  <div className="rounded-lg p-4" style={{ background: "#FFFFFF", border: `1px dashed ${palette.border}`, color: palette.muted, fontSize: "13px", fontWeight: 700 }}>
+                    暂无可用功能，登录后从功能大厅开始探索 ✨
                   </div>
-                  <div style={{ color: palette.ink, fontSize: "14px", fontWeight: 900, marginBottom: "4px" }}>
-                    {f.name}
-                  </div>
-                  <div style={{ color: f.color, fontSize: "12px", fontWeight: 800, lineHeight: 1.45 }}>
-                    {f.desc}
-                  </div>
-                </button>
-              ))}
+                ) : (
+                  mostUsed.map((m) => (
+                    <button
+                      key={m.module_id}
+                      onClick={() => onOpenModule(m)}
+                      className="rounded-lg p-4 text-left transition-all hover:-translate-y-0.5 active:translate-y-0"
+                      style={{ background: "#FFFFFF", border: `1px solid ${palette.border}`, cursor: "pointer", boxShadow: "0 10px 24px rgba(20,117,150,0.08)" }}
+                    >
+                      <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg text-xl" style={{ background: palette.soft }}>
+                        {moduleEmoji(m)}
+                      </div>
+                      <div style={{ color: palette.ink, fontSize: "14px", fontWeight: 900, marginBottom: "4px" }}>{m.name}</div>
+                      <div style={{ color: palette.muted, fontSize: "12px", fontWeight: 800, lineHeight: 1.45 }}>{m.description}</div>
+                    </button>
+                  ))
+                )}
+              </div>
             </div>
             </Reveal>
           </div>
@@ -230,29 +230,29 @@ export function HomePage({ onNavigate, palette, activePaletteId, onPaletteChange
                 <Star size={19} style={{ color: palette.purple }} />
                 <h2 style={{ color: palette.ink, fontSize: "20px", fontWeight: 900 }}>马上加入</h2>
               </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {comingSoonFeatures.map((f) => (
-                  <div
-                    key={f.name}
-                    className="rounded-lg p-4"
-                    style={{ background: f.bg, border: `1px solid ${palette.border}` }}
-                  >
-                    <div className="mb-3 flex items-start justify-between gap-3">
-                      <div className="text-3xl">{f.emoji}</div>
-                      <span
-                        className="rounded-full px-2.5 py-1"
-                        style={{ background: "#FFFFFF", color: f.color, fontSize: "11px", fontWeight: 900 }}
-                      >
-                        {f.tag}
-                      </span>
-                    </div>
-                    <div style={{ color: palette.ink, fontSize: "15px", fontWeight: 900, marginBottom: "4px" }}>
-                      {f.name}
-                    </div>
-                    <div style={{ color: f.color, fontSize: "13px", fontWeight: 800 }}>{f.desc}</div>
-                  </div>
-                ))}
-              </div>
+              {comingSoonModules.length === 0 ? (
+                <div style={{ fontSize: "13px", color: palette.muted, fontWeight: 700 }}>暂无即将上线的功能</div>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {comingSoonModules.map((m) => (
+                    <button
+                      key={m.module_id}
+                      onClick={() => onOpenModule(m)}
+                      className="rounded-lg p-4 text-left transition-all hover:-translate-y-0.5"
+                      style={{ background: palette.softAlt, border: `1px solid ${palette.border}`, cursor: "pointer" }}
+                    >
+                      <div className="mb-3 flex items-start justify-between gap-3">
+                        <div className="text-3xl">{moduleEmoji(m)}</div>
+                        <span className="rounded-full px-2.5 py-1" style={{ background: "#FFFFFF", color: palette.secondary, fontSize: "11px", fontWeight: 900 }}>
+                          即将上线
+                        </span>
+                      </div>
+                      <div style={{ color: palette.ink, fontSize: "15px", fontWeight: 900, marginBottom: "4px" }}>{m.name}</div>
+                      <div style={{ color: palette.primaryDark, fontSize: "13px", fontWeight: 800 }}>{m.description}</div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             </Reveal>
 

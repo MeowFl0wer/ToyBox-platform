@@ -1,104 +1,81 @@
-import { useState } from "react";
-import { Search, ArrowRight, Sparkles } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Search, ArrowRight, Sparkles, Star, Lock } from "lucide-react";
 import type { ThemePalette } from "../theme";
+import { api, ApiError, type ApiModule } from "../api/client";
+import { moduleEmoji } from "../api/moduleIcon";
 import { Reveal } from "./anim";
-
-interface Feature {
-  id: string;
-  emoji: string;
-  name: string;
-  desc: string;
-  tag: string;
-  status: "available" | "coming";
-}
-
-const allFeatures: Feature[] = [
-  { id: "1", emoji: "🎲", name: "随机选择器", desc: "选择困难症救星，帮你在纠结时做出决定", tag: "工具", status: "available" },
-  { id: "2", emoji: "💡", name: "灵感生成器", desc: "随机生成各种创意点子，激发你的灵感", tag: "工具", status: "available" },
-  { id: "3", emoji: "⏱️", name: "番茄计时器", desc: "专注工作的好帮手，提升效率不分心", tag: "工具", status: "available" },
-  { id: "4", emoji: "🗺️", name: "地图足迹", desc: "记录你走过的城市和地方，可视化你的旅行", tag: "生活", status: "coming" },
-  { id: "5", emoji: "🎮", name: "像素小游戏", desc: "随时随地放松一下，轻量级休闲小游戏", tag: "娱乐", status: "coming" },
-  { id: "6", emoji: "📝", name: "随手记录", desc: "灵感瞬间快速捕捉，不怕忘记好想法", tag: "工具", status: "coming" },
-  { id: "7", emoji: "🎨", name: "调色板生成", desc: "设计师必备，一键生成和谐配色方案", tag: "工具", status: "coming" },
-  { id: "8", emoji: "🌤️", name: "天气诗歌", desc: "把今天的天气写成一首诗，浪漫又有趣", tag: "实验", status: "coming" },
-  { id: "9", emoji: "🔤", name: "文字转艺术", desc: "生成个性化文字海报，一键分享朋友圈", tag: "娱乐", status: "coming" },
-  { id: "10", emoji: "🎵", name: "心情音乐匹配", desc: "根据你的心情和天气推荐合适的歌单", tag: "生活", status: "coming" },
-  { id: "11", emoji: "🧩", name: "脑筋急转弯", desc: "各种趣味谜题，挑战你的思维极限", tag: "娱乐", status: "coming" },
-  { id: "12", emoji: "📊", name: "生活数据看板", desc: "记录和分析你的日常数据，发现生活规律", tag: "生活", status: "coming" },
-];
-
-const categories = ["全部", "工具", "娱乐", "生活", "实验"];
-
-const getTagColors = (palette: ThemePalette): Record<string, { bg: string; color: string }> => ({
-  工具: { bg: palette.soft, color: palette.primaryDark },
-  娱乐: { bg: `${palette.purple}18`, color: palette.purple },
-  生活: { bg: palette.softAlt, color: palette.primaryDark },
-  实验: { bg: `${palette.lime}33`, color: palette.primaryDark },
-});
 
 interface FeatureHallProps {
   palette: ThemePalette;
+  isLoggedIn: boolean;
+  onOpenAuth: () => void;
+  onOpenModule: (m: ApiModule) => void;
 }
 
-export function FeatureHall({ palette }: FeatureHallProps) {
+const FAVORITE_TAG = "收藏";
+
+export function FeatureHall({ palette, isLoggedIn, onOpenAuth, onOpenModule }: FeatureHallProps) {
+  const [modules, setModules] = useState<ApiModule[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState("");
   const [search, setSearch] = useState("");
   const [activeTag, setActiveTag] = useState("全部");
 
-  const filtered = allFeatures.filter((f) => {
-    const matchTag = activeTag === "全部" || f.tag === activeTag;
-    const matchSearch =
-      f.name.includes(search) || f.desc.includes(search) || f.tag.includes(search);
+  useEffect(() => {
+    api
+      .getModules()
+      .then(setModules)
+      .catch((e) => setErr(e instanceof ApiError ? e.message : "加载失败"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const categories = useMemo(() => {
+    const cats = Array.from(new Set(modules.map((m) => m.category)));
+    return ["全部", FAVORITE_TAG, ...cats];
+  }, [modules]);
+
+  const filtered = modules.filter((m) => {
+    const matchTag = activeTag === "全部" || (activeTag === FAVORITE_TAG ? m.favorite : m.category === activeTag);
+    const q = search.trim();
+    const matchSearch = !q || m.name.includes(q) || m.description.includes(q) || m.category.includes(q);
     return matchTag && matchSearch;
   });
 
+  const toggleFav = async (m: ApiModule) => {
+    if (!isLoggedIn) {
+      onOpenAuth();
+      return;
+    }
+    try {
+      const updated = m.favorite ? await api.unfavorite(m.module_id) : await api.favorite(m.module_id);
+      setModules((prev) => prev.map((x) => (x.module_id === m.module_id ? { ...x, favorite: updated.favorite } : x)));
+    } catch {
+      /* ignore */
+    }
+  };
+
   return (
-    <div
-      className="min-h-full bg-flow"
-      style={{
-        fontFamily: "'Nunito', sans-serif",
-        background: palette.pageBg,
-      }}
-    >
+    <div className="min-h-full bg-flow" style={{ fontFamily: "'Nunito', sans-serif", background: palette.pageBg }}>
       {/* Header */}
-      <Reveal
-        immediate
-        className="px-6 md:px-10 pt-8 pb-6"
-        style={{ borderBottom: `1px solid ${palette.border}` }}
-      >
+      <Reveal immediate className="px-6 md:px-10 pt-8 pb-6" style={{ borderBottom: `1px solid ${palette.border}` }}>
         <div className="flex items-center gap-3 mb-1">
           <h1 style={{ fontSize: "26px", fontWeight: 900, color: palette.ink }}>功能大厅</h1>
-          <span
-            className="px-2.5 py-1 rounded-full"
-            style={{ fontSize: "12px", fontWeight: 800, background: palette.soft, color: palette.primaryDark }}
-          >
-            {allFeatures.length} 个功能
+          <span className="px-2.5 py-1 rounded-full" style={{ fontSize: "12px", fontWeight: 800, background: palette.soft, color: palette.primaryDark }}>
+            {modules.length} 个功能
           </span>
         </div>
-        <p style={{ fontSize: "14px", color: palette.muted }}>
-          所有有趣功能的集中入口，持续接入新功能中 ✨
-        </p>
+        <p style={{ fontSize: "14px", color: palette.muted }}>所有有趣功能的集中入口，持续接入新功能中 ✨</p>
 
         {/* Search */}
         <div className="relative mt-4 max-w-md">
-          <Search
-            size={16}
-            className="absolute left-3.5 top-1/2 -translate-y-1/2"
-            style={{ color: "#86A7B9" }}
-          />
+          <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2" style={{ color: "#86A7B9" }} />
           <input
             type="text"
             placeholder="搜索功能名称或分类…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-10 pr-4 py-2.5 rounded-xl"
-            style={{
-              background: "#fff",
-              border: `1.5px solid ${palette.border}`,
-              fontSize: "14px",
-              color: palette.ink,
-              outline: "none",
-              fontFamily: "'Nunito', sans-serif",
-            }}
+            style={{ background: "#fff", border: `1.5px solid ${palette.border}`, fontSize: "14px", color: palette.ink, outline: "none", fontFamily: "'Nunito', sans-serif" }}
             onFocus={(e) => (e.target.style.borderColor = palette.primary)}
             onBlur={(e) => (e.target.style.borderColor = palette.border)}
           />
@@ -110,7 +87,7 @@ export function FeatureHall({ palette }: FeatureHallProps) {
             <button
               key={cat}
               onClick={() => setActiveTag(cat)}
-              className="px-4 py-1.5 rounded-full transition-all"
+              className="px-4 py-1.5 rounded-full transition-all inline-flex items-center gap-1"
               style={{
                 background: activeTag === cat ? palette.activeGradient : "#fff",
                 color: activeTag === cat ? "#fff" : palette.muted,
@@ -121,6 +98,7 @@ export function FeatureHall({ palette }: FeatureHallProps) {
                 fontFamily: "'Nunito', sans-serif",
               }}
             >
+              {cat === FAVORITE_TAG && <Star size={12} fill={activeTag === cat ? "#fff" : "none"} />}
               {cat}
             </button>
           ))}
@@ -129,40 +107,28 @@ export function FeatureHall({ palette }: FeatureHallProps) {
 
       {/* Feature grid */}
       <div className="px-6 md:px-10 py-7">
-        {filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 gap-3">
-            <span style={{ fontSize: "40px" }}>🔍</span>
-            <div style={{ fontSize: "16px", fontWeight: 700, color: palette.muted }}>
-              没有找到相关功能
-            </div>
-            <div style={{ fontSize: "13px", color: palette.muted }}>换个关键词试试吧</div>
-          </div>
+        {err ? (
+          <EmptyState palette={palette} emoji="⚠️" title="加载失败" desc={err} />
+        ) : loading ? (
+          <EmptyState palette={palette} emoji="⏳" title="加载中…" desc="正在获取功能列表" />
+        ) : filtered.length === 0 ? (
+          <EmptyState palette={palette} emoji={activeTag === FAVORITE_TAG ? "⭐" : "🔍"} title={activeTag === FAVORITE_TAG ? "还没有收藏" : "没有找到相关功能"} desc={activeTag === FAVORITE_TAG ? "点功能卡右上角的星星即可收藏" : "换个关键词试试吧"} />
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filtered.map((f, i) => (
-              <Reveal key={f.id} delay={Math.min(i, 8) * 0.05}>
-                <FeatureCard feature={f} palette={palette} />
+            {filtered.map((m, i) => (
+              <Reveal key={m.module_id} delay={Math.min(i, 8) * 0.05}>
+                <FeatureCard module={m} palette={palette} onOpen={() => onOpenModule(m)} onToggleFav={() => toggleFav(m)} />
               </Reveal>
             ))}
           </div>
         )}
 
         {/* Bottom note */}
-        <Reveal
-          className="mt-10 rounded-2xl px-6 py-5 flex items-center gap-4"
-          style={{
-            background: `linear-gradient(135deg, ${palette.soft}, #FFFFFF)`,
-            border: `1.5px dashed ${palette.strongBorder}`,
-          }}
-        >
+        <Reveal className="mt-10 rounded-2xl px-6 py-5 flex items-center gap-4" style={{ background: `linear-gradient(135deg, ${palette.soft}, #FFFFFF)`, border: `1.5px dashed ${palette.strongBorder}` }}>
           <Sparkles size={22} style={{ color: palette.secondary, flexShrink: 0 }} />
           <div>
-            <div style={{ fontSize: "15px", fontWeight: 800, color: palette.ink, marginBottom: "2px" }}>
-              更多功能陆续上线中
-            </div>
-            <div style={{ fontSize: "13px", color: palette.muted }}>
-              有好玩的功能想法？后续将开放意见反馈通道，欢迎一起共建有趣的地方。
-            </div>
+            <div style={{ fontSize: "15px", fontWeight: 800, color: palette.ink, marginBottom: "2px" }}>更多功能陆续上线中</div>
+            <div style={{ fontSize: "13px", color: palette.muted }}>新功能做好后会出现在这里；管理员可在后台发布「即将上线」入口。</div>
           </div>
         </Reveal>
       </div>
@@ -170,78 +136,69 @@ export function FeatureHall({ palette }: FeatureHallProps) {
   );
 }
 
-function FeatureCard({ feature, palette }: { feature: Feature; palette: ThemePalette }) {
-  const tagColors = getTagColors(palette);
-  const tc = tagColors[feature.tag] ?? { bg: "#F3F4F6", color: "#6B7280" };
-  const isAvailable = feature.status === "available";
-
+function FeatureCard({ module: m, palette, onOpen, onToggleFav }: { module: ApiModule; palette: ThemePalette; onOpen: () => void; onToggleFav: () => void }) {
+  const isAvailable = m.status === "active";
   return (
     <div
-      className="rounded-2xl p-5 flex flex-col gap-4 transition-all hover:-translate-y-0.5 hover:shadow-md"
-      style={{
-        background: "rgba(255,255,255,0.92)",
-        border: `1.5px solid ${palette.border}`,
-        boxShadow: `0 10px 24px ${palette.glow}`,
-      }}
+      onClick={onOpen}
+      className="relative rounded-2xl p-5 flex flex-col gap-4 transition-all hover:-translate-y-0.5 hover:shadow-md cursor-pointer h-full"
+      style={{ background: "rgba(255,255,255,0.92)", border: `1.5px solid ${palette.border}`, boxShadow: `0 10px 24px ${palette.glow}` }}
     >
-      <div className="flex items-start justify-between">
-        <div
-          className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl"
-          style={{ background: isAvailable ? palette.soft : palette.cardAlt }}
-        >
-          {feature.emoji}
+      {/* 收藏按钮（右上角） */}
+      <button
+        onClick={(e) => { e.stopPropagation(); onToggleFav(); }}
+        title={m.favorite ? "取消收藏" : "收藏"}
+        className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-full transition-all hover:scale-110"
+        style={{ background: m.favorite ? palette.soft : "transparent", border: "none", cursor: "pointer" }}
+      >
+        <Star size={17} style={{ color: m.favorite ? palette.primary : palette.muted }} fill={m.favorite ? palette.primary : "none"} />
+      </button>
+
+      <div className="flex items-start justify-between pr-8">
+        <div className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl" style={{ background: isAvailable ? palette.soft : palette.cardAlt }}>
+          {moduleEmoji(m)}
         </div>
-        <div className="flex items-center gap-2">
-          <span
-            className="px-2.5 py-0.5 rounded-full"
-            style={{ fontSize: "11px", fontWeight: 700, background: tc.bg, color: tc.color }}
-          >
-            {feature.tag}
+        <div className="flex items-center gap-2 mt-1">
+          <span className="px-2.5 py-0.5 rounded-full" style={{ fontSize: "11px", fontWeight: 700, background: palette.soft, color: palette.primaryDark }}>
+            {m.category}
           </span>
           {isAvailable ? (
-            <span
-              className="px-2.5 py-0.5 rounded-full"
-              style={{ fontSize: "11px", fontWeight: 700, background: palette.softAlt, color: palette.primaryDark }}
-            >
-              ✓ 可用
-            </span>
+            <span className="px-2.5 py-0.5 rounded-full" style={{ fontSize: "11px", fontWeight: 700, background: palette.softAlt, color: palette.primaryDark }}>✓ 可用</span>
           ) : (
-            <span
-              className="px-2.5 py-0.5 rounded-full"
-              style={{ fontSize: "11px", fontWeight: 700, background: palette.soft, color: palette.secondary }}
-            >
-              即将上线
-            </span>
+            <span className="px-2.5 py-0.5 rounded-full" style={{ fontSize: "11px", fontWeight: 700, background: palette.soft, color: palette.secondary }}>即将上线</span>
           )}
         </div>
       </div>
 
-      <div>
-        <div style={{ fontSize: "15px", fontWeight: 800, color: palette.ink, marginBottom: "4px" }}>
-          {feature.name}
+      <div className="flex-1">
+        <div className="flex items-center gap-1.5" style={{ marginBottom: "4px" }}>
+          <span style={{ fontSize: "15px", fontWeight: 800, color: palette.ink }}>{m.name}</span>
+          {m.auth_required && <Lock size={12} style={{ color: palette.muted }} />}
         </div>
-        <div style={{ fontSize: "13px", color: palette.muted, lineHeight: 1.6 }}>{feature.desc}</div>
+        <div style={{ fontSize: "13px", color: palette.muted, lineHeight: 1.6 }}>{m.description}</div>
       </div>
 
       <button
-        disabled={!isAvailable}
         className="w-full py-2 rounded-xl flex items-center justify-center gap-2 transition-all"
         style={{
           background: isAvailable ? palette.activeGradient : palette.soft,
           color: isAvailable ? "#fff" : palette.muted,
-          fontSize: "14px",
-          fontWeight: 700,
-          border: "none",
-          cursor: isAvailable ? "pointer" : "not-allowed",
-          fontFamily: "'Nunito', sans-serif",
+          fontSize: "14px", fontWeight: 700, border: "none",
+          cursor: "pointer", fontFamily: "'Nunito', sans-serif",
         }}
       >
-        {isAvailable ? (
-          <>进入 <ArrowRight size={14} /></>
-        ) : (
-          <>敬请期待</>
-        )}
+        {isAvailable ? (<>进入 <ArrowRight size={14} /></>) : (<>敬请期待</>)}
       </button>
+    </div>
+  );
+}
+
+function EmptyState({ palette, emoji, title, desc }: { palette: ThemePalette; emoji: string; title: string; desc: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-20 gap-3">
+      <span style={{ fontSize: "40px" }}>{emoji}</span>
+      <div style={{ fontSize: "16px", fontWeight: 700, color: palette.muted }}>{title}</div>
+      <div style={{ fontSize: "13px", color: palette.muted }}>{desc}</div>
     </div>
   );
 }

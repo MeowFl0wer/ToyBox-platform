@@ -7,25 +7,27 @@ import {
   ChevronLeft,
   ChevronRight,
   Sparkles,
-  User,
   LogIn,
+  Shield,
   Zap,
 } from "lucide-react";
 import type { ThemePalette } from "../theme";
+import type { ApiUser } from "../api/client";
 import { fireConfetti } from "./anim";
 
 interface SidebarProps {
   currentPage: string;
   onNavigate: (page: string) => void;
   isLoggedIn: boolean;
+  isAdmin?: boolean;
   onOpenAuth: () => void;
   collapsed: boolean;
   onToggleCollapse: () => void;
-  user?: { name: string; email: string; avatar?: string };
+  user?: ApiUser | null;
   palette: ThemePalette;
 }
 
-const navItems = [
+const baseNavItems = [
   { id: "home", label: "首页", icon: Home },
   { id: "features", label: "功能大厅", icon: LayoutGrid },
   { id: "settings", label: "设置", icon: Settings },
@@ -36,12 +38,15 @@ export function Sidebar({
   currentPage,
   onNavigate,
   isLoggedIn,
+  isAdmin,
   onOpenAuth,
   collapsed,
   onToggleCollapse,
   user,
   palette,
 }: SidebarProps) {
+  const navItems = isAdmin ? [...baseNavItems, { id: "admin", label: "后台管理", icon: Shield }] : baseNavItems;
+  const displayName = user?.nickname || user?.username || "ToyBox 用户";
   return (
     <aside
       className="relative flex flex-col h-full transition-all duration-300 ease-in-out"
@@ -96,33 +101,34 @@ export function Sidebar({
       {/* User zone */}
       <div className="px-3 py-3" style={{ borderBottom: `1px solid ${palette.border}` }}>
         {isLoggedIn && user ? (
-          <div
-            className={`flex items-center gap-3 rounded-xl px-2 py-2 ${collapsed ? "justify-center" : ""}`}
-            style={{ background: palette.soft }}
+          <button
+            onClick={() => onNavigate("settings")}
+            className={`w-full flex items-center gap-3 rounded-xl px-2 py-2 transition-all hover:opacity-90 ${collapsed ? "justify-center" : ""}`}
+            style={{ background: palette.soft, border: "none", cursor: "pointer", fontFamily: "'Nunito', sans-serif" }}
+            title="个人设置"
           >
             <div
-              className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold"
+              className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold overflow-hidden"
               style={{ background: palette.activeGradient }}
             >
-              {user.name.charAt(0)}
+              {user.avatar_url ? (
+                <img src={user.avatar_url} alt="" className="w-full h-full object-cover" />
+              ) : (
+                displayName.charAt(0).toUpperCase()
+              )}
             </div>
             {!collapsed && (
-              <div className="overflow-hidden">
-                <div
-                  className="truncate"
-                  style={{ fontSize: "14px", fontWeight: 700, color: palette.ink }}
-                >
-                  {user.name}
+              <div className="overflow-hidden text-left">
+                <div className="truncate" style={{ fontSize: "14px", fontWeight: 700, color: palette.ink }}>
+                  {displayName}
                 </div>
-                <div
-                  className="truncate"
-                  style={{ fontSize: "11px", color: palette.muted }}
-                >
-                  欢迎回来 👋
+                <div className="truncate" style={{ fontSize: "11px", color: palette.muted, fontWeight: 600 }}>
+                  ID {user.uid_display}
+                  {isAdmin ? " · 管理员" : ""}
                 </div>
               </div>
             )}
-          </div>
+          </button>
         ) : (
           <button
             onClick={onOpenAuth}

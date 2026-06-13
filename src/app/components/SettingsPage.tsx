@@ -1,7 +1,9 @@
 import { useState } from "react";
-import { Camera, Mail, Lock, User, FileText, Moon, Sun, LogOut, ChevronRight, Shield } from "lucide-react";
+import { Mail, Lock, User, FileText, Moon, Sun, LogOut, ChevronRight, Shield } from "lucide-react";
 import type { ThemePalette } from "../theme";
 import { Reveal, fireConfetti } from "./anim";
+import { api, ApiError, type ApiUser } from "../api/client";
+import { useAuth } from "../api/auth";
 
 interface SettingsPageProps {
   isLoggedIn: boolean;
@@ -9,22 +11,31 @@ interface SettingsPageProps {
   onLogout: () => void;
   isDark: boolean;
   onToggleDark: () => void;
-  user?: { name: string; email: string };
+  user?: ApiUser | null;
   palette: ThemePalette;
 }
 
-type SettingsView = "main" | "change-password" | "change-email" | "verify-email";
+type SettingsView = "main" | "change-password" | "change-email";
 
 export function SettingsPage({ isLoggedIn, onOpenAuth, onLogout, isDark, onToggleDark, user, palette }: SettingsPageProps) {
+  const { refreshMe } = useAuth();
   const [view, setView] = useState<SettingsView>("main");
-  const [nickname, setNickname] = useState(user?.name ?? "ToyBox 用户");
-  const [bio, setBio] = useState("热爱探索有趣的事物 ✨");
+  const [nickname, setNickname] = useState(user?.nickname || user?.username || "ToyBox 用户");
+  const [bio, setBio] = useState(user?.bio ?? "");
   const [saved, setSaved] = useState(false);
+  const [saveErr, setSaveErr] = useState("");
 
-  const handleSave = () => {
-    setSaved(true);
-    fireConfetti(palette);
-    setTimeout(() => setSaved(false), 2000);
+  const handleSave = async () => {
+    setSaveErr("");
+    try {
+      await api.updateProfile({ nickname, bio });
+      await refreshMe();
+      setSaved(true);
+      fireConfetti(palette);
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setSaveErr(e instanceof ApiError ? e.message : "保存失败");
+    }
   };
 
   if (!isLoggedIn) {
@@ -63,20 +74,14 @@ export function SettingsPage({ isLoggedIn, onOpenAuth, onLogout, isDark, onToggl
   }
 
   if (view === "change-password") {
-    return <SubPage title="修改密码" onBack={() => setView("main")}>
+    return <SubPage title="修改密码" onBack={() => setView("main")} palette={palette}>
       <PasswordChangeForm onDone={() => setView("main")} />
     </SubPage>;
   }
 
   if (view === "change-email") {
-    return <SubPage title="修改邮箱" onBack={() => setView("main")}>
-      <EmailChangeForm onNext={() => setView("verify-email")} currentEmail={user?.email ?? ""} />
-    </SubPage>;
-  }
-
-  if (view === "verify-email") {
-    return <SubPage title="验证邮箱" onBack={() => setView("change-email")}>
-      <VerifyCodeForm onDone={() => setView("main")} email={user?.email ?? ""} />
+    return <SubPage title="修改邮箱" onBack={() => setView("main")} palette={palette}>
+      <EmailChangeForm currentEmail={user?.email ?? ""} onDone={() => setView("main")} />
     </SubPage>;
   }
 
@@ -97,22 +102,19 @@ export function SettingsPage({ isLoggedIn, onOpenAuth, onLogout, isDark, onToggl
         <Section title="基本信息">
           {/* Avatar */}
           <div className="flex items-center gap-4 mb-5">
-            <div className="relative">
-              <div
-                className="w-16 h-16 rounded-2xl flex items-center justify-center text-2xl font-black text-white"
-                style={{ background: "linear-gradient(135deg, #38BDF8, #2DD4BF)" }}
-              >
-                {nickname.charAt(0)}
-              </div>
-              <button
-                className="absolute -bottom-1 -right-1 w-6 h-6 rounded-full flex items-center justify-center"
-                style={{ background: "#38BDF8", border: "2px solid #fff" }}
-              >
-                <Camera size={11} color="#fff" />
-              </button>
+            <div
+              className="w-16 h-16 rounded-2xl flex items-center justify-center text-2xl font-black text-white overflow-hidden"
+              style={{ background: "linear-gradient(135deg, #38BDF8, #2DD4BF)" }}
+            >
+              {user?.avatar_url ? (
+                <img src={user.avatar_url} alt="" className="w-full h-full object-cover" />
+              ) : (
+                nickname.charAt(0).toUpperCase()
+              )}
             </div>
             <div>
               <div style={{ fontSize: "16px", fontWeight: 800, color: "#2D1F18" }}>{nickname}</div>
+              <div style={{ fontSize: "12px", color: "#8C7B72", fontWeight: 600 }}>ID {user?.uid_display} · @{user?.username}</div>
               <div style={{ fontSize: "13px", color: "#8C7B72" }}>{user?.email}</div>
             </div>
           </div>
@@ -138,6 +140,7 @@ export function SettingsPage({ isLoggedIn, onOpenAuth, onLogout, isDark, onToggl
             />
           </FieldGroup>
 
+          {saveErr && <div style={{ fontSize: "13px", color: "#D14343", fontWeight: 600 }}>{saveErr}</div>}
           <button
             onClick={handleSave}
             className="mt-2 px-5 py-2 rounded-xl transition-all hover:opacity-90 active:scale-95"
@@ -286,9 +289,9 @@ function SettingRow({ icon, label, value, onClick }: { icon: React.ReactNode; la
   );
 }
 
-function SubPage({ title, children, onBack }: { title: string; children: React.ReactNode; onBack: () => void }) {
+function SubPage({ title, children, onBack, palette }: { title: string; children: React.ReactNode; onBack: () => void; palette: ThemePalette }) {
   return (
-    <div className="min-h-full" style={{ fontFamily: "'Nunito', sans-serif", background: "#F5FCFF" }}>
+    <div className="min-h-full bg-flow" style={{ fontFamily: "'Nunito', sans-serif", background: palette.pageBg }}>
       <div className="px-6 md:px-10 py-8 max-w-md">
         <button
           onClick={onBack}
@@ -304,55 +307,157 @@ function SubPage({ title, children, onBack }: { title: string; children: React.R
   );
 }
 
+function Msg({ text }: { text: string }) {
+  if (!text) return null;
+  return <div style={{ fontSize: "13px", color: text.startsWith("✓") ? "#0E8A6A" : "#D14343", fontWeight: 600 }}>{text}</div>;
+}
+
+function DevHint({ code }: { code: string }) {
+  if (!code) return null;
+  return (
+    <div style={{ fontSize: "12px", color: "#9B6A16", background: "#FFF4C9", borderRadius: "10px", padding: "8px 12px", fontWeight: 700 }}>
+      开发模式验证码：{code}（已自动填入）
+    </div>
+  );
+}
+
+function SendCodeBtn({ onClick, busy }: { onClick: () => void; busy: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={busy}
+      className="rounded-xl px-3 transition-all active:scale-95 flex-shrink-0"
+      style={{ background: "#E6F7FF", color: "#036E94", border: "1.5px solid rgba(56,189,248,0.3)", fontSize: "13px", fontWeight: 800, cursor: busy ? "not-allowed" : "pointer", fontFamily: "'Nunito', sans-serif", whiteSpace: "nowrap" }}
+    >
+      {busy ? "…" : "发送验证码"}
+    </button>
+  );
+}
+
 function PasswordChangeForm({ onDone }: { onDone: () => void }) {
+  const [oldPwd, setOldPwd] = useState("");
+  const [newPwd, setNewPwd] = useState("");
+  const [confirmPwd, setConfirmPwd] = useState("");
+  const [code, setCode] = useState("");
+  const [devCode, setDevCode] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  const sendCode = async () => {
+    setMsg("");
+    setSending(true);
+    try {
+      const d: any = await api.passwordSendCode();
+      if (d?.dev_code) { setDevCode(d.dev_code); setCode(d.dev_code); }
+      setMsg("✓ 验证码已发送到你的邮箱");
+    } catch (e) {
+      setMsg(e instanceof ApiError ? e.message : "发送失败");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const submit = async () => {
+    setMsg("");
+    if (newPwd.length < 8) return setMsg("新密码至少 8 位");
+    if (newPwd !== confirmPwd) return setMsg("两次输入的新密码不一致");
+    if (!/^\d{6}$/.test(code)) return setMsg("请输入 6 位邮箱验证码");
+    setBusy(true);
+    try {
+      await api.changePassword(oldPwd, code, newPwd);
+      setMsg("✓ 密码已修改");
+      setTimeout(onDone, 800);
+    } catch (e) {
+      setMsg(e instanceof ApiError ? e.message : "修改失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <>
-      <StyledInput placeholder="当前密码" type="password" />
-      <StyledInput placeholder="新密码" type="password" />
-      <StyledInput placeholder="确认新密码" type="password" />
-      <PrimaryBtn onClick={onDone}>保存新密码</PrimaryBtn>
+      <StyledInput placeholder="当前密码" type="password" value={oldPwd} onChange={setOldPwd} />
+      <StyledInput placeholder="新密码（至少 8 位）" type="password" value={newPwd} onChange={setNewPwd} />
+      <StyledInput placeholder="确认新密码" type="password" value={confirmPwd} onChange={setConfirmPwd} />
+      <div className="flex gap-2">
+        <StyledInput placeholder="邮箱验证码" type="text" value={code} onChange={(v) => setCode(v.replace(/\D/g, "").slice(0, 6))} />
+        <SendCodeBtn onClick={sendCode} busy={sending} />
+      </div>
+      <DevHint code={devCode} />
+      <Msg text={msg} />
+      <PrimaryBtn onClick={submit}>{busy ? "处理中…" : "保存新密码"}</PrimaryBtn>
     </>
   );
 }
 
-function EmailChangeForm({ onNext, currentEmail }: { onNext: () => void; currentEmail: string }) {
+function EmailChangeForm({ currentEmail, onDone }: { currentEmail: string; onDone: () => void }) {
+  const { refreshMe } = useAuth();
+  const [newEmail, setNewEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [devCode, setDevCode] = useState("");
+  const [pwd, setPwd] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  const sendCode = async () => {
+    setMsg("");
+    if (!newEmail.trim()) return setMsg("请输入新邮箱地址");
+    setSending(true);
+    try {
+      const d: any = await api.emailSendCode(newEmail.trim());
+      if (d?.dev_code) { setDevCode(d.dev_code); setCode(d.dev_code); }
+      setMsg("✓ 验证码已发送到新邮箱");
+    } catch (e) {
+      setMsg(e instanceof ApiError ? e.message : "发送失败");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const submit = async () => {
+    setMsg("");
+    if (!/^\d{6}$/.test(code)) return setMsg("请输入 6 位邮箱验证码");
+    if (!pwd) return setMsg("请输入当前登录密码");
+    setBusy(true);
+    try {
+      await api.changeEmail(newEmail.trim(), code, pwd);
+      await refreshMe();
+      setMsg("✓ 邮箱已更新");
+      setTimeout(onDone, 800);
+    } catch (e) {
+      setMsg(e instanceof ApiError ? e.message : "修改失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <>
       <div style={{ fontSize: "13px", color: "#8C7B72", lineHeight: 1.7, padding: "10px 14px", background: "#E6F7FF", borderRadius: "10px" }}>
         当前邮箱：<strong style={{ color: "#38BDF8" }}>{currentEmail}</strong>
       </div>
-      <StyledInput placeholder="新邮箱地址" type="email" />
-      <PrimaryBtn onClick={onNext}>发送验证码</PrimaryBtn>
-    </>
-  );
-}
-
-function VerifyCodeForm({ onDone, email }: { onDone: () => void; email: string }) {
-  return (
-    <>
-      <div style={{ fontSize: "13px", color: "#8C7B72", lineHeight: 1.7 }}>
-        验证码已发送至 <strong style={{ color: "#38BDF8" }}>{email}</strong>
-      </div>
+      <StyledInput placeholder="新邮箱地址" type="email" value={newEmail} onChange={setNewEmail} />
       <div className="flex gap-2">
-        {[0,1,2,3,4,5].map(i => (
-          <input
-            key={i}
-            maxLength={1}
-            className="flex-1 h-12 text-center rounded-xl text-lg font-bold"
-            style={{ border: "2px solid rgba(56,189,248,0.25)", background: "#FFFDF8", color: "#2D1F18", outline: "none", fontFamily: "'Nunito', sans-serif" }}
-          />
-        ))}
+        <StyledInput placeholder="新邮箱验证码" type="text" value={code} onChange={(v) => setCode(v.replace(/\D/g, "").slice(0, 6))} />
+        <SendCodeBtn onClick={sendCode} busy={sending} />
       </div>
-      <PrimaryBtn onClick={onDone}>确认验证</PrimaryBtn>
+      <DevHint code={devCode} />
+      <StyledInput placeholder="当前登录密码" type="password" value={pwd} onChange={setPwd} />
+      <Msg text={msg} />
+      <PrimaryBtn onClick={submit}>{busy ? "处理中…" : "确认更换邮箱"}</PrimaryBtn>
     </>
   );
 }
 
-function StyledInput({ placeholder, type }: { placeholder: string; type: string }) {
+function StyledInput({ placeholder, type, value, onChange }: { placeholder: string; type: string; value: string; onChange: (v: string) => void }) {
   return (
     <input
       placeholder={placeholder}
       type={type}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
       style={{
         width: "100%", padding: "10px 14px", borderRadius: "10px",
         border: "1.5px solid rgba(56,189,248,0.2)", background: "#FFFDF8",

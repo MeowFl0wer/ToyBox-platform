@@ -50,19 +50,30 @@ X-PT-User-Context:   base64url( JSON.stringify(payload, 紧凑, key 排序) )
 X-PT-User-Signature: hmac_sha256_hex( MODULE_SIGN_KEY, X-PT-User-Context )
 ```
 
-`payload` 形如：
+`payload` 形如（已登录用户）：
 
 ```json
-{ "sub": "用户UUID", "username": "alice", "email": "a@x.com",
-  "roles": ["user"], "module_id": "welcome", "auth_required": true, "exp": 1730000000 }
+{ "sub": "用户UUID", "uid": 7, "uid_display": "000007",
+  "username": "alice", "nickname": "小爱", "display_name": "小爱",
+  "avatar_url": "/api/core/avatar/用户UUID", "roles": ["user"],
+  "ver": 0, "module_id": "welcome", "auth_required": true, "exp": 1730000000 }
 ```
+
+- `username` 是登录名（唯一），`display_name` 是展示名（主站已做「昵称→用户名」回退）。
+- `avatar_url` 为站内相对路径；模块前端与主站同源，可直接 `<img src>` 加载。
+- **`email` 默认不下发**，仅当模块在 `module.yaml` 声明 `auth.request_email: true` 时主站才附带（最小权限）。
+- `ver` 绑定用户 token 版本；主站在改密码 / 重置 2FA 后会让旧上下文及模块 token 立即失效。
 
 模块用 `MODULE_SIGN_KEY`（主站部署时通过环境变量注入，与主站 `TOYBOX_MODULE_SIGN_KEY` 一致）
 重算签名并恒定时间比对，通过后再 base64 解码取用户。校验逻辑见 [`backend/app/core/auth.py`](backend/app/core/auth.py)：
 
 ```python
 ctx = Depends(require_user)   # 需登录接口：匿名/无 sub 直接 401
-ctx.sub / ctx.username / ctx.roles ...
+ctx.sub          # 内部用户 id（业务数据隔离用，绝不信任前端传来的 id）
+ctx.display_name # 展示名（已回退）
+ctx.uid_display  # 000007
+ctx.avatar_url   # 头像（站内相对路径）
+ctx.email        # 仅当 module.yaml 设 auth.request_email: true 才有值
 ```
 
 匿名模块（`auth.required=false`）会收到 `anonymous=true / persistence_allowed=false`，**不得持久化任何业务数据**。

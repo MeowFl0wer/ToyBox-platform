@@ -64,28 +64,38 @@ export function ModuleHostPage({ module, palette, isLoggedIn, onBack, onOpenAuth
  */
 function ModuleFrame({ module, palette }: { module: ApiModule; palette: ThemePalette }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const tokenRef = useRef<string | null>(null);
+  const tokRef = useRef<string | null>(null);
+  const expRef = useRef<number>(0);
   const [ready, setReady] = useState(!module.auth_required); // 匿名模块无需 token，直接就绪
   const [err, setErr] = useState("");
 
-  // 取模块级 token（仅需登录模块）
+  // 取/续模块级 token：临期前 60s 自动重签，对模块完全透明（只要登录态有效就一直可用）
+  const ensureToken = async (force = false): Promise<string | null> => {
+    if (!module.auth_required) return null;
+    if (!force && tokRef.current && Date.now() < expRef.current - 60_000) return tokRef.current;
+    const d = await api.moduleToken(module.module_id);
+    tokRef.current = d.token;
+    expRef.current = Date.now() + (d.expires_in ?? 1800) * 1000;
+    return d.token;
+  };
+
+  // 首次预取 token，让 iframe 就绪
   useEffect(() => {
-    if (!module.auth_required) return;
+    if (!module.auth_required) {
+      setReady(true);
+      return;
+    }
     let alive = true;
-    api
-      .moduleToken(module.module_id)
-      .then((d) => {
-        if (!alive) return;
-        tokenRef.current = d.token;
-        setReady(true);
-      })
+    ensureToken()
+      .then(() => alive && setReady(true))
       .catch(() => alive && setErr("获取模块访问令牌失败"));
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [module.module_id, module.auth_required]);
 
-  // postMessage RPC 代理：只代发本模块网关路径，带模块 token
+  // postMessage RPC 代理：只代发本模块网关路径，带（自动续期的）模块 token
   useEffect(() => {
     const onMessage = async (e: MessageEvent) => {
       const win = iframeRef.current?.contentWindow;
@@ -94,22 +104,27 @@ function ModuleFrame({ module, palette }: { module: ApiModule; palette: ThemePal
       if (!msg || msg.source !== "pt-module" || msg.type !== "api") return;
       const reply = (status: number, body: unknown) =>
         win.postMessage({ source: "pt-host", type: "api_result", reqId: msg.reqId, status, body }, "*");
-      // 仅允许相对子路径，拼到本模块网关下
       const sub = typeof msg.path === "string" && msg.path.startsWith("/") && !msg.path.includes("://") ? msg.path : null;
       if (!sub) {
         reply(0, { code: 10004, message: "非法请求路径", data: null });
         return;
       }
-      try {
+      const doFetch = (tok: string | null) => {
         const headers: Record<string, string> = {};
         if (msg.body !== undefined && msg.body !== null) headers["Content-Type"] = "application/json";
-        if (tokenRef.current) headers["Authorization"] = `Bearer ${tokenRef.current}`;
-        const res = await fetch(`/api/modules/${module.module_id}${sub}`, {
+        if (tok) headers["Authorization"] = `Bearer ${tok}`;
+        return fetch(`/api/modules/${module.module_id}${sub}`, {
           method: (msg.method || "GET").toUpperCase(),
           headers,
           credentials: "omit", // 不带 Cookie，纯 token 鉴权
           body: msg.body !== undefined && msg.body !== null ? JSON.stringify(msg.body) : undefined,
         });
+      };
+      try {
+        let res = await doFetch(await ensureToken());
+        if (res.status === 401 && module.auth_required) {
+          res = await doFetch(await ensureToken(true)); // token 失效 → 续期重试一次
+        }
         let json: unknown = {};
         try {
           json = await res.json();
@@ -123,6 +138,7 @@ function ModuleFrame({ module, palette }: { module: ApiModule; palette: ThemePal
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [module.module_id]);
 
   if (err) {

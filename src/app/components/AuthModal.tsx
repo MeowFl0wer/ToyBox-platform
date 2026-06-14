@@ -26,6 +26,7 @@ export function AuthModal({ open, onClose, onAuthed }: AuthModalProps) {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [remember, setRemember] = useState(true);
 
   if (!open) return null;
 
@@ -33,7 +34,7 @@ export function AuthModal({ open, onClose, onAuthed }: AuthModalProps) {
     setView("login");
     setAccount(""); setUsername(""); setNickname(""); setEmail("");
     setPassword(""); setConfirmPwd(""); setCode(""); setDevCode("");
-    setError(""); setNotice(""); setBusy(false); setShowPwd(false);
+    setError(""); setNotice(""); setBusy(false); setShowPwd(false); setRemember(true);
   };
   const close = () => { reset(); onClose(); };
   const success = () => { reset(); onAuthed(); };
@@ -54,7 +55,7 @@ export function AuthModal({ open, onClose, onAuthed }: AuthModalProps) {
   const doLogin = () =>
     run(async () => {
       if (!account.trim() || !password) throw new ApiError(0, "请输入账号和密码");
-      const data = await api.login(account.trim(), password);
+      const data = await api.login(account.trim(), password, remember);
       applyAuth(data);
       success();
     });
@@ -190,7 +191,11 @@ export function AuthModal({ open, onClose, onAuthed }: AuthModalProps) {
                   </button>
                 }
               />
-              <div className="flex justify-end">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-1.5" style={{ fontSize: "12px", color: "#8C7B72", cursor: "pointer", fontWeight: 600 }}>
+                  <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} style={{ accentColor: "#38BDF8", cursor: "pointer" }} />
+                  在此设备记住我
+                </label>
                 <button onClick={() => { setError(""); setNotice(""); setView("forgot"); }} style={{ fontSize: "12px", color: "#38BDF8", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}>
                   忘记密码？
                 </button>

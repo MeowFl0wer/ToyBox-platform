@@ -35,6 +35,7 @@ class RegisterIn(BaseModel):
 class LoginIn(BaseModel):
     account: str = Field(min_length=3, max_length=255)  # 用户名或邮箱
     password: str = Field(min_length=1, max_length=72)
+    remember: bool = False  # 在此设备记住我（持久化刷新 Cookie）
 
 
 class ProfileIn(BaseModel):

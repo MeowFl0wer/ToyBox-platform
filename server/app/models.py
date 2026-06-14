@@ -70,6 +70,7 @@ class UserSession(Base):
     refresh_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     user_agent: Mapped[str] = mapped_column(Text, nullable=False, default="")
     ip_address: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    remember: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # 记住我：持久化刷新 Cookie
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

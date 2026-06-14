@@ -122,7 +122,7 @@ def _allocate_uid(db: Session) -> int:
     return seq.value
 
 
-def _issue_session(db: Session, user: User, request: Request) -> str:
+def _issue_session(db: Session, user: User, request: Request, remember: bool) -> str:
     raw = new_refresh_token()
     db.add(
         UserSession(
@@ -130,30 +130,34 @@ def _issue_session(db: Session, user: User, request: Request) -> str:
             refresh_token_hash=hash_token(raw),
             user_agent=request.headers.get("User-Agent", "")[:300],
             ip_address=get_client_ip(request),
+            remember=remember,
             expires_at=_now() + timedelta(days=settings.refresh_token_ttl_days),
         )
     )
     return raw
 
 
-def _set_refresh_cookie(response: Response, raw: str) -> None:
-    response.set_cookie(
-        REFRESH_COOKIE, raw,
-        max_age=settings.refresh_token_ttl_days * 86400,
-        httponly=True, samesite="lax",
-        secure=not settings.dev_mode,  # 生产（dev_mode=false，HTTPS）强制 Secure；开发 http 下为 False
+def _set_refresh_cookie(response: Response, raw: str, remember: bool) -> None:
+    kwargs = dict(
+        httponly=True,
+        samesite="lax",
+        secure=not settings.dev_mode,  # 生产（HTTPS）强制 Secure；开发 http 下为 False
         path=COOKIE_PATH,
     )
+    # 记住我：持久化（关浏览器仍在，下次自动登录）；否则会话级 Cookie（关浏览器即失效）
+    if remember:
+        kwargs["max_age"] = settings.refresh_token_ttl_days * 86400
+    response.set_cookie(REFRESH_COOKIE, raw, **kwargs)
 
 
 def _clear_refresh_cookie(response: Response) -> None:
     response.delete_cookie(REFRESH_COOKIE, path=COOKIE_PATH)
 
 
-def _auth_payload(db: Session, user: User, request: Request, response: Response) -> dict:
+def _auth_payload(db: Session, user: User, request: Request, response: Response, remember: bool) -> dict:
     access = create_access_token(user.id, user.role)
-    raw = _issue_session(db, user, request)
-    _set_refresh_cookie(response, raw)
+    raw = _issue_session(db, user, request, remember)
+    _set_refresh_cookie(response, raw, remember)
     return {"access_token": access, "user": user_public(user)}
 
 
@@ -200,7 +204,7 @@ def register(body: RegisterIn, request: Request, response: Response, db: Session
     )
     db.add(user)
     db.flush()
-    data = _auth_payload(db, user, request, response)
+    data = _auth_payload(db, user, request, response, remember=True)
     db.commit()
     return ok(data, message="注册成功")
 
@@ -217,7 +221,7 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
         raise APIError(CODE_UNAUTHORIZED, "账号或密码错误")
     if user.status != "active":
         raise APIError(CODE_UNAUTHORIZED, "账号已被禁用或注销")
-    data = _auth_payload(db, user, request, response)
+    data = _auth_payload(db, user, request, response, body.remember)
     db.commit()
     return ok(data, message="登录成功")
 
@@ -233,8 +237,9 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
     user = db.get(User, sess.user_id)
     if not user or user.status != "active":
         raise APIError(CODE_UNAUTHORIZED, "账号不可用")
+    remember = sess.remember  # 续期时保持原来的记住我设置
     sess.revoked_at = _now()
-    data = _auth_payload(db, user, request, response)
+    data = _auth_payload(db, user, request, response, remember)
     db.commit()
     return ok(data, message="ok")
 

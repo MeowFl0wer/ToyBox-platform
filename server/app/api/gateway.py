@@ -67,9 +67,10 @@ async def gateway(module_id: str, path: str, request: Request, db: Session = Dep
     # 转发路径白名单（module.yaml 的 gateway.allow_paths）：fail-closed —— 未声明就一律拒绝，
     # 仅 gateway.allow_paths 命中的业务路径放行；模块后端的 /health、/admin、/internal 等不暴露。
     # 旧/特殊模块若确需放行全部，必须在 module.yaml 显式声明 gateway.legacy_allow_all: true。
-    # 路径规范化 + 可疑字符拒绝（防 ../、%2e/%2f/%5c、控制字符绕过白名单或打到未开放路径）
-    raw_path = request.scope.get("raw_path", b"").decode("latin-1", "ignore").lower()
-    if any(bad in raw_path for bad in ("%2e", "%2f", "%5c", "%00")):
+    # 路径规范化 + 可疑字符拒绝（防 ../、编码绕过白名单或打到未开放路径）
+    # 原始路径段一律不允许百分号编码（含 %2e/%2f/%5c 及双重编码 %25xx）；需要编码的值请放查询参数。
+    raw_path = request.scope.get("raw_path", b"").decode("latin-1", "ignore")
+    if "%" in raw_path:
         raise APIError(CODE_MODULE_NOT_FOUND, "该模块接口未开放")
     if ".." in path or "\\" in path or any(ord(c) < 32 for c in path):
         raise APIError(CODE_MODULE_NOT_FOUND, "该模块接口未开放")

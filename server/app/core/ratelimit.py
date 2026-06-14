@@ -19,3 +19,18 @@ def allow(key: str, limit: int, window_s: int) -> bool:
         bucket.append(now)
         _hits[key] = bucket
         return True
+
+
+def count(key: str, window_s: int) -> int:
+    """窗口内的计数（只读，不记一次）。用于「失败次数」类阈值判断。"""
+    now = time.time()
+    with _lock:
+        bucket = [t for t in _hits.get(key, []) if now - t < window_s]
+        _hits[key] = bucket
+        return len(bucket)
+
+
+def record(key: str) -> None:
+    """记录一次事件（如一次登录失败）。"""
+    with _lock:
+        _hits.setdefault(key, []).append(time.time())

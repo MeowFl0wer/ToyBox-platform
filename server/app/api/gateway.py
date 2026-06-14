@@ -49,10 +49,12 @@ async def gateway(module_id: str, path: str, request: Request, db: Session = Dep
     if m.status != "active" or not m.internal_backend_url:
         raise APIError(CODE_MODULE_DISABLED, "模块未启用或未在运行")
 
-    # 转发路径白名单（module.yaml 的 gateway.allow_paths）：声明了就只放行匹配路径，
-    # 避免把模块后端的 /health、/admin、/internal 等非业务接口经网关暴露给用户。
-    allow = (m.manifest or {}).get("gateway", {}).get("allow_paths") if isinstance(m.manifest, dict) else None
-    if allow:
+    # 转发路径白名单（module.yaml 的 gateway.allow_paths）：fail-closed —— 未声明就一律拒绝，
+    # 仅 gateway.allow_paths 命中的业务路径放行；模块后端的 /health、/admin、/internal 等不暴露。
+    # 旧/特殊模块若确需放行全部，必须在 module.yaml 显式声明 gateway.legacy_allow_all: true。
+    gw = m.manifest.get("gateway", {}) if isinstance(m.manifest, dict) else {}
+    if not gw.get("legacy_allow_all"):
+        allow = gw.get("allow_paths") or []
         sub = "/" + path
         if not any(sub == a or sub.startswith(a.rstrip("/") + "/") for a in allow):
             raise APIError(CODE_MODULE_NOT_FOUND, "该模块接口未开放")

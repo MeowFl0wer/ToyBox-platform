@@ -216,8 +216,13 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
     if not ratelimit.allow(f"login:ip:{ip}", 15, 300):
         raise APIError(CODE_RATE_LIMITED, "登录尝试过于频繁，请稍后再试")
     account = body.account.strip()
+    # 账号维度失败限流：抵御分布式撞库（多 IP 刷同一账号）。15 分钟内失败满 10 次冷却。
+    acct_key = f"loginfail:{account.lower()}"
+    if ratelimit.count(acct_key, 900) >= 10:
+        raise APIError(CODE_RATE_LIMITED, "该账号登录失败次数过多，请 15 分钟后再试")
     user = db.query(User).filter(or_(User.username == account, User.email == account.lower())).first()
     if not user or not verify_password(body.password, user.password_hash):
+        ratelimit.record(acct_key)  # 仅失败计数
         raise APIError(CODE_UNAUTHORIZED, "账号或密码错误")
     if user.status != "active":
         raise APIError(CODE_UNAUTHORIZED, "账号已被禁用或注销")

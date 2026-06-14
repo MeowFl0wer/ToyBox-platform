@@ -33,6 +33,12 @@ backend:
   internal_port: 8000
   health_path: /health
 
+# 网关只放行这些业务路径（前缀匹配）。/health、/manifest 等内部接口不经网关暴露。
+# 不声明则默认放行全部——强烈建议每个模块都按需收敛。
+gateway:
+  allow_paths:
+    - /greeting
+
 # 本模块无需数据库；需要时改为 enabled: true 并提供 backend/alembic 迁移（见 README）
 database:
   enabled: false

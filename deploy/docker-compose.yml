@@ -51,6 +51,7 @@ services:
       TOYBOX_DB_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD}@toybox-postgres:5432/main_db
       TOYBOX_DEPLOY_MODE: docker
       TOYBOX_WORKER_INPROC: "false"     # 安装/重启/卸载任务交给 deploy_worker，主站不碰 docker
+      TOYBOX_TRUST_PROXY: "true"         # 经 Nginx 反代，读 X-Forwarded-For 取真实客户端 IP（限流按客户端聚合）
     volumes:
       - data:/app/server/data            # 模块源码/前端产物/密钥（与 worker、web 共享）
     depends_on: [db]

@@ -21,7 +21,13 @@ from .seed import run_seed
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("toybox")
 
-app = FastAPI(title=settings.app_name, docs_url="/api/docs", openapi_url="/api/openapi.json")
+# 生产关闭交互式文档/openapi，避免暴露完整接口地图
+app = FastAPI(
+    title=settings.app_name,
+    docs_url="/api/docs" if settings.dev_mode else None,
+    redoc_url=None,
+    openapi_url="/api/openapi.json" if settings.dev_mode else None,
+)
 
 
 # ---------- 安全响应头 ----------
@@ -33,6 +39,9 @@ class SecurityHeaders(BaseHTTPMiddleware):
         resp.headers["Referrer-Policy"] = "no-referrer"
         resp.headers["X-XSS-Protection"] = "0"
         resp.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+        # 模块静态资源即使被直接顶层访问也强制沙箱化（不透明源），避免模块 XSS 升级为主站 XSS
+        if request.url.path.startswith("/module-assets"):
+            resp.headers["Content-Security-Policy"] = "sandbox allow-scripts"
         return resp
 
 

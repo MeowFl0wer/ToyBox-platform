@@ -49,6 +49,14 @@ async def gateway(module_id: str, path: str, request: Request, db: Session = Dep
     if m.status != "active" or not m.internal_backend_url:
         raise APIError(CODE_MODULE_DISABLED, "模块未启用或未在运行")
 
+    # 转发路径白名单（module.yaml 的 gateway.allow_paths）：声明了就只放行匹配路径，
+    # 避免把模块后端的 /health、/admin、/internal 等非业务接口经网关暴露给用户。
+    allow = (m.manifest or {}).get("gateway", {}).get("allow_paths") if isinstance(m.manifest, dict) else None
+    if allow:
+        sub = "/" + path
+        if not any(sub == a or sub.startswith(a.rstrip("/") + "/") for a in allow):
+            raise APIError(CODE_MODULE_NOT_FOUND, "该模块接口未开放")
+
     # 鉴权改用模块级 token（Bearer），不再凭 Cookie——iframe 已 sandbox 为不透明源、拿不到 Cookie
     user = None
     auth = request.headers.get("Authorization", "")

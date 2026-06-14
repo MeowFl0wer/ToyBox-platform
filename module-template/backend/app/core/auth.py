@@ -27,8 +27,14 @@ MODULE_ID = os.environ.get("MODULE_ID", "welcome")
 
 class UserContext:
     def __init__(self, payload: dict):
-        self.sub: str | None = payload.get("sub")
-        self.username: str = payload.get("username", "")
+        self.sub: str | None = payload.get("sub")          # 内部用户 id（用于数据隔离，签名可信）
+        self.uid: int | None = payload.get("uid")          # 数字 uid
+        self.uid_display: str = payload.get("uid_display", "")  # 展示用 000001
+        self.username: str = payload.get("username", "")   # 登录名
+        self.nickname: str = payload.get("nickname", "")   # 昵称（可空）
+        self.display_name: str = payload.get("display_name") or self.nickname or self.username  # 展示名
+        self.avatar_url: str = payload.get("avatar_url", "")
+        # email 仅当模块在 module.yaml 声明 auth.request_email: true 时主站才下发，否则为空
         self.email: str = payload.get("email", "")
         self.roles: list[str] = payload.get("roles", [])
         self.anonymous: bool = bool(payload.get("anonymous"))

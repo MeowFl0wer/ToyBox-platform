@@ -104,6 +104,26 @@ def _validate_manifest(m: dict) -> str:
     return str(mid)
 
 
+_CROSSORIGIN_RE = re.compile(r"\s+crossorigin(=([\"'][^\"']*[\"']|\S+))?")
+
+
+def _strip_crossorigin(asset_dir: Path, logs: list[str] | None = None) -> None:
+    """去掉构建产物 HTML 里 <script>/<link> 的 crossorigin 属性。
+    模块前端在 sandbox="allow-scripts"（不透明源 = "null"）的 iframe 中加载；带 crossorigin 的
+    模块脚本会触发 CORS 请求（Origin: null），静态服务无 Access-Control-Allow-Origin → 脚本被拦截 →
+    页面空白。去掉后按 no-cors 同 URL 加载即可正常执行。"""
+    for html in asset_dir.glob("*.html"):
+        try:
+            text = html.read_text(encoding="utf-8")
+            new = _CROSSORIGIN_RE.sub("", text)
+            if new != text:
+                html.write_text(new, encoding="utf-8")
+                if logs is not None:
+                    logs.append(f"已移除 {html.name} 中的 crossorigin 属性（iframe 沙箱兼容）")
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _health_ok(internal_url: str, health_path: str, tries: int = 30) -> bool:
     for _ in range(tries):
         time.sleep(1)
@@ -477,6 +497,7 @@ def _do_install(job_id: str) -> None:
             if asset_dir.exists():
                 shutil.rmtree(asset_dir)
             shutil.copytree(dist, asset_dir)
+            _strip_crossorigin(asset_dir, logs)
 
         # 4) runner 部署后端（建后端/镜像 + 建库迁移 + 起服务）→ 健康检查
         internal_url = ""

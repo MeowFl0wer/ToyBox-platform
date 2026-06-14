@@ -14,6 +14,7 @@ def user_public(u: User) -> dict:
         "email": u.email,
         "avatar_url": u.avatar_url,
         "bio": u.bio,
+        "email_verified": bool(u.email_verified),
         "role": u.role,
         "status": u.status,
         "created_at": u.created_at.isoformat() if u.created_at else None,

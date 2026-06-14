@@ -52,7 +52,7 @@ export function Sidebar({
       className="relative flex flex-col h-full transition-all duration-300 ease-in-out"
       style={{
         width: collapsed ? "72px" : "240px",
-        background: "#FFFFFF",
+        background: palette.surface,
         borderRight: `1px solid ${palette.border}`,
         boxShadow: `2px 0 16px ${palette.glow}`,
         fontFamily: "'Nunito', sans-serif",

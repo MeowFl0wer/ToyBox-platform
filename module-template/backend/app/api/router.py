@@ -15,5 +15,6 @@ router = APIRouter()
 
 @router.get("/greeting")
 def greeting(ctx: UserContext = Depends(require_user)):
-    name = ctx.username or "朋友"
-    return ok({"greeting": f"欢迎 {name}！！", "username": name})
+    # display_name 已在主站做好「昵称→用户名」回退，模块直接用即可
+    name = ctx.display_name or "朋友"
+    return ok({"greeting": f"欢迎 {name}！！", "username": name, "uid": ctx.uid_display})

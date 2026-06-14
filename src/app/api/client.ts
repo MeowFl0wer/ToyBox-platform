@@ -10,6 +10,7 @@ export interface ApiUser {
   email: string;
   avatar_url: string;
   bio: string;
+  email_verified?: boolean;
   role: string; // user | admin
   status: string;
   created_at?: string | null;
@@ -39,9 +40,11 @@ export const setToken = (t: string | null) => {
 
 export class ApiError extends Error {
   code: number;
-  constructor(code: number, message: string) {
+  data: any;
+  constructor(code: number, message: string, data: any = null) {
     super(message);
     this.code = code;
+    this.data = data;
   }
 }
 
@@ -58,6 +61,26 @@ async function tryRefresh(): Promise<boolean> {
   }
   accessToken = null;
   return false;
+}
+
+// 文件上传：FormData 不能设 Content-Type（浏览器自动带 boundary）；同样支持 401 自动刷新一次
+async function upload<T = any>(path: string, form: FormData, retry = true): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (accessToken) headers["Authorization"] = `Bearer ${accessToken}`;
+  const res = await fetch(path, { method: "POST", headers, credentials: "include", body: form });
+  let json: any = {};
+  try {
+    json = await res.json();
+  } catch {
+    /* 空响应 */
+  }
+  if (json && json.code === 10001 && retry) {
+    if (await tryRefresh()) return upload<T>(path, form, false);
+  }
+  if (!res.ok || (json && json.code !== 0)) {
+    throw new ApiError(json?.code ?? res.status, json?.message ?? `请求失败 (${res.status})`, json?.data);
+  }
+  return json.data as T;
 }
 
 async function request<T = any>(method: string, path: string, body?: unknown, retry = true): Promise<T> {
@@ -81,7 +104,7 @@ async function request<T = any>(method: string, path: string, body?: unknown, re
     if (await tryRefresh()) return request<T>(method, path, body, false);
   }
   if (!res.ok || (json && json.code !== 0)) {
-    throw new ApiError(json?.code ?? res.status, json?.message ?? `请求失败 (${res.status})`);
+    throw new ApiError(json?.code ?? res.status, json?.message ?? `请求失败 (${res.status})`, json?.data);
   }
   return json.data as T;
 }
@@ -91,14 +114,19 @@ export const api = {
   sendCode: (email: string) => request("POST", "/api/auth/register/send-code", { email }),
   register: (b: { email: string; code: string; username: string; password: string; nickname?: string }) =>
     request<{ access_token: string; user: ApiUser }>("POST", "/api/auth/register", b),
-  login: (account: string, password: string, remember = false, code?: string) =>
-    request<{ access_token: string; user: ApiUser }>("POST", "/api/auth/login", { account, password, remember, code }),
+  login: (account: string, password: string, remember = false, code?: string, totp?: string, recovery_code?: string) =>
+    request<{ access_token: string; user: ApiUser; recovery_codes?: string[] }>("POST", "/api/auth/login", { account, password, remember, code, totp, recovery_code }),
   loginSendCode: (account: string) => request<{ dev_code?: string }>("POST", "/api/auth/login/send-code", { account }),
   logout: () => request("POST", "/api/auth/logout", {}),
   me: () => request<ApiUser>("GET", "/api/auth/me"),
   refresh: tryRefresh,
   updateProfile: (b: { nickname?: string; bio?: string; avatar_url?: string }) =>
     request<ApiUser>("PUT", "/api/auth/profile", b),
+  uploadAvatar: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return upload<ApiUser>("/api/auth/avatar", form);
+  },
 
   // 找回密码（未登录）
   forgotPassword: (email: string) => request<{ dev_code?: string }>("POST", "/api/auth/password/forgot", { email }),
@@ -147,9 +175,18 @@ export const api = {
   adminAnalyticsOverview: () => request<any>("GET", "/api/admin/analytics/overview"),
   adminAnalyticsPaths: () => request<{ path: string; count: number }[]>("GET", "/api/admin/analytics/paths"),
   adminAnalyticsModules: () => request<{ module_id: string; count: number }[]>("GET", "/api/admin/analytics/modules"),
+  adminAnalyticsVisitors: () =>
+    request<{
+      online_count: number;
+      window_minutes: number;
+      online: { kind: string; name: string; uid_display: string; username: string; ip: string; last_path: string; feature: string; last_seen: string | null }[];
+      recent: { kind: string; name: string; uid_display: string; username: string; ip: string; path: string; module_id: string; feature: string; created_at: string | null }[];
+    }>("GET", "/api/admin/analytics/visitors"),
   adminUsers: () => request<ApiUser[]>("GET", "/api/admin/users"),
-  adminDisableUser: (id: string) => request<ApiUser>("POST", `/api/admin/users/${id}/disable`, {}),
+  adminDisableUser: (id: string, password: string) => request<ApiUser>("POST", `/api/admin/users/${id}/disable`, { password }),
   adminEnableUser: (id: string) => request<ApiUser>("POST", `/api/admin/users/${id}/enable`, {}),
+  adminDeleteUser: (id: string, password: string) => request("DELETE", `/api/admin/users/${id}`, { password }),
+  adminResetTotp: (id: string, password: string) => request<ApiUser>("POST", `/api/admin/users/${id}/reset-totp`, { password }),
   adminContents: () => request<any[]>("GET", "/api/admin/site-contents"),
   adminUpsertContent: (key: string, b: { title?: string; content_type: string; content_value: any; status?: string }) =>
     request("PUT", `/api/admin/site-contents/${encodeURIComponent(key)}`, b),

@@ -46,11 +46,12 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def create_access_token(sub: str, role: str) -> str:
+def create_access_token(sub: str, role: str, version: int = 0) -> str:
     payload = {
         "sub": sub,
         "role": role,
         "type": "access",
+        "ver": version,  # token 版本：与 user.token_version 不一致即失效（用于强制全局登出）
         "iat": int(_now().timestamp()),
         "exp": int((_now() + timedelta(minutes=settings.access_token_ttl_min)).timestamp()),
     }
@@ -67,29 +68,32 @@ def decode_access_token(token: str) -> dict | None:
     return payload
 
 
-def create_module_token(user_id: str, module_id: str, ttl_min: int = 30) -> str:
+def create_module_token(user_id: str, module_id: str, ttl_min: int = 30, version: int = 0) -> str:
     """模块级短期 token：由主站签发给 iframe 宿主，仅用于访问该模块网关。
-    与 access token 区分（type=module、绑定 mod=module_id），即便泄露也只能访问该模块。"""
+    与 access token 区分（type=module、绑定 mod=module_id），即便泄露也只能访问该模块。
+    绑定 ver=user.token_version：改密码/重置 2FA 自增版本后，已签发的模块 token 立即失效。"""
     now = _now()
     payload = {
         "sub": user_id,
         "mod": module_id,
         "type": "module",
+        "ver": version,
         "iat": int(now.timestamp()),
         "exp": int((now + timedelta(minutes=ttl_min)).timestamp()),
     }
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")
 
 
-def decode_module_token(token: str, module_id: str) -> str | None:
-    """校验模块 token，返回 user_id；type 必须为 module 且 mod 必须等于当前模块。"""
+def decode_module_token(token: str, module_id: str) -> dict | None:
+    """校验模块 token，返回完整 payload（含 sub、ver）；type 必须为 module 且 mod 必须等于当前模块。
+    返回 None 表示非法。调用方需再用 ver 与 user.token_version 比对，确认未被强制失效。"""
     try:
         payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
     except jwt.PyJWTError:
         return None
     if payload.get("type") != "module" or payload.get("mod") != module_id:
         return None
-    return payload.get("sub")
+    return payload
 
 
 def new_refresh_token() -> str:

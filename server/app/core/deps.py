@@ -32,6 +32,11 @@ def _bearer(request: Request) -> str | None:
     return None
 
 
+def _version_ok(payload: dict, user: User) -> bool:
+    # token 版本不匹配（重置 2FA / 改密码等会自增）→ 旧 access token 立即失效
+    return int(payload.get("ver", 0)) == int(user.token_version or 0)
+
+
 def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     token = _bearer(request)
     if not token:
@@ -42,6 +47,8 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     user = db.get(User, payload.get("sub"))
     if not user or user.status != "active":
         raise APIError(CODE_UNAUTHORIZED, "账号不可用")
+    if not _version_ok(payload, user):
+        raise APIError(CODE_UNAUTHORIZED, "登录状态已失效，请重新登录")
     return user
 
 
@@ -53,7 +60,7 @@ def get_optional_user(request: Request, db: Session = Depends(get_db)) -> User |
     if not payload:
         return None
     user = db.get(User, payload.get("sub"))
-    if user and user.status == "active":
+    if user and user.status == "active" and _version_ok(payload, user):
         return user
     return None
 
@@ -72,7 +79,7 @@ def resolve_user_optional(request: Request, db: Session) -> User | None:
         payload = decode_access_token(token)
         if payload:
             u = db.get(User, payload.get("sub"))
-            if u and u.status == "active":
+            if u and u.status == "active" and _version_ok(payload, u):
                 return u
     raw = request.cookies.get(REFRESH_COOKIE)
     if raw:

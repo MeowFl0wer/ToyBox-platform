@@ -12,10 +12,10 @@ const HOME_DOODLES: DoodleSpec[] = [
   { id: "cloud", type: "SmilingCloud", xPct: 15, yPct: 20.8, w: 96, opacity: 0.7, float: true },
   { id: "teacup", type: "TeaCup", xPct: 91.2, yPct: 52.1, w: 64, opacity: 0.6 },
   { id: "star", type: "StarBuddy", xPct: 57, yPct: 18.6, w: 38, opacity: 0.52, rotate: 36, float: true },
-  { id: "crystal", type: "Crystal", xPct: 95.5, yPct: 96.1, w: 80, opacity: 0.7 },
+  { id: "crystal", type: "Crystal", xPct: 95.5, yPct: 89.5, w: 80, opacity: 0.7 },
   { id: "slime", type: "Slime", xPct: 76.8, yPct: 68.7, w: 80, opacity: 0.7, float: true },
-  { id: "cat", type: "SleepingCat", xPct: 6, yPct: 70.8, w: 44, opacity: 0.52, float: true },
-  { id: "mushroom", type: "Mushroom", xPct: 92.7, yPct: 97.1, w: 30, opacity: 0.28, rotate: -17 },
+  { id: "cat", type: "SleepingCat", xPct: 17.5, yPct: 70.8, w: 44, opacity: 0.52, float: true },
+  { id: "mushroom", type: "Mushroom", xPct: 92.7, yPct: 90.5, w: 30, opacity: 0.28, rotate: -17 },
 ];
 
 interface HomePageProps {
@@ -28,6 +28,13 @@ interface HomePageProps {
   onPaletteChange: (paletteId: string) => void;
 }
 
+// 以下为「站点内容」的内置兜底文案；后台编辑后会覆盖这些默认值（取不到才用兜底）。
+const DEFAULT_HERO_SUBTITLE =
+  "一个可以慢慢加功能的小盒子。工具、游戏、灵感实验和生活记录都会被放在这里，首页保持完整清爽，每次打开都能看到它又长大一点。";
+const DEFAULT_BANNER = {
+  title: "慢慢装满这个盒子",
+  text: "后续内容现在回到主页下方，页面会更自然地向下展开；每次加一个真的会用到的小功能，ToyBox 就多一格可以玩的空间。",
+};
 const updates = [
   { date: "2026-06-12", title: "ToyBox v1.0 上线", desc: "主站框架完成，开始慢慢装入新功能" },
   { date: "2026-06-20", title: "待办清单准备中", desc: "把要做的事一件件记下来" },
@@ -36,9 +43,16 @@ const updates = [
 
 export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, onPaletteChange }: HomePageProps) {
   const [modules, setModules] = useState<ApiModule[]>([]);
+  const [content, setContent] = useState<Record<string, any>>({});
   useEffect(() => {
     api.getModules().then(setModules).catch(() => {});
+    api.siteContents("home.hero_subtitle,home.banner,home.updates").then(setContent).catch(() => {});
   }, []);
+
+  const heroSubtitle: string = content["home.hero_subtitle"]?.content_value?.text || DEFAULT_HERO_SUBTITLE;
+  const banner = content["home.banner"]?.content_value || DEFAULT_BANNER;
+  const updateItems: { date: string; title: string; desc: string }[] =
+    content["home.updates"]?.content_value?.items?.length ? content["home.updates"].content_value.items : updates;
 
   const activeModules = modules.filter((m) => m.status === "active");
   const comingSoonModules = modules.filter((m) => m.status === "coming_soon");
@@ -82,7 +96,7 @@ export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, o
               <div
                 className="inline-flex w-fit items-center gap-2 rounded-full px-3 py-1.5"
                 style={{
-                  background: "#FFFFFF",
+                  background: palette.surface,
                   color: palette.primaryDark,
                   border: `1px solid ${palette.border}`,
                   fontSize: "13px",
@@ -106,7 +120,7 @@ export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, o
                       key={label}
                       className="rounded-lg px-3 py-2"
                       style={{
-                        background: "rgba(255,255,255,0.82)",
+                        background: palette.glass,
                         border: `1px solid ${palette.border}`,
                         boxShadow: `0 8px 18px ${palette.glow}`,
                       }}
@@ -146,7 +160,7 @@ export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, o
                 className="max-w-3xl"
                 style={{ color: palette.muted, fontSize: "19px", fontWeight: 700, lineHeight: 1.72 }}
               >
-                一个可以慢慢加功能的小盒子。工具、游戏、灵感实验和生活记录都会被放在这里，首页保持完整清爽，每次打开都能看到它又长大一点。
+                {heroSubtitle}
               </p>
 
               <div className="mt-8 flex flex-col gap-3 sm:flex-row">
@@ -170,7 +184,7 @@ export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, o
                   onClick={() => onNavigate("settings")}
                   className="inline-flex items-center justify-center gap-2 rounded-lg px-6 py-3 transition-all hover:-translate-y-0.5 active:translate-y-0"
                   style={{
-                    background: "#FFFFFF",
+                    background: palette.surface,
                     color: palette.primaryDark,
                     fontSize: "15px",
                     fontWeight: 900,
@@ -194,7 +208,7 @@ export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, o
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 {mostUsed.length === 0 ? (
-                  <div className="rounded-lg p-4" style={{ background: "#FFFFFF", border: `1px dashed ${palette.border}`, color: palette.muted, fontSize: "13px", fontWeight: 700 }}>
+                  <div className="rounded-lg p-4" style={{ background: palette.surface, border: `1px dashed ${palette.border}`, color: palette.muted, fontSize: "13px", fontWeight: 700 }}>
                     暂无可用功能，登录后从功能大厅开始探索 ✨
                   </div>
                 ) : (
@@ -203,7 +217,7 @@ export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, o
                       key={m.module_id}
                       onClick={() => onOpenModule(m)}
                       className="rounded-lg p-4 text-left transition-all hover:-translate-y-0.5 active:translate-y-0"
-                      style={{ background: "#FFFFFF", border: `1px solid ${palette.border}`, cursor: "pointer", boxShadow: "0 10px 24px rgba(20,117,150,0.08)" }}
+                      style={{ background: palette.surface, border: `1px solid ${palette.border}`, cursor: "pointer", boxShadow: `0 10px 24px ${palette.glow}` }}
                     >
                       <div className="mb-3 flex h-11 w-11 items-center justify-center rounded-lg text-xl" style={{ background: palette.soft }}>
                         {moduleEmoji(m)}
@@ -224,7 +238,7 @@ export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, o
             <Reveal>
             <div
               className="rounded-lg border p-5 sm:p-6"
-              style={{ background: "#FFFFFF", borderColor: palette.border }}
+              style={{ background: palette.surface, borderColor: palette.border }}
             >
               <div className="mb-5 flex items-center gap-2">
                 <Star size={19} style={{ color: palette.purple }} />
@@ -243,7 +257,7 @@ export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, o
                     >
                       <div className="mb-3 flex items-start justify-between gap-3">
                         <div className="text-3xl">{moduleEmoji(m)}</div>
-                        <span className="rounded-full px-2.5 py-1" style={{ background: "#FFFFFF", color: palette.secondary, fontSize: "11px", fontWeight: 900 }}>
+                        <span className="rounded-full px-2.5 py-1" style={{ background: palette.surface, color: palette.secondary, fontSize: "11px", fontWeight: 900 }}>
                           即将上线
                         </span>
                       </div>
@@ -259,19 +273,19 @@ export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, o
             <Reveal delay={0.08}>
             <div
               className="rounded-lg border p-5 sm:p-6"
-              style={{ background: "#FFFFFF", borderColor: palette.border }}
+              style={{ background: palette.surface, borderColor: palette.border }}
             >
               <div className="mb-5 flex items-center gap-2">
                 <Bell size={19} style={{ color: palette.primary }} />
                 <h2 style={{ color: palette.ink, fontSize: "20px", fontWeight: 900 }}>最近动态</h2>
               </div>
               <div className="flex flex-col gap-3">
-                {updates.map((u, i) => (
+                {updateItems.map((u, i) => (
                   <div
-                    key={u.date}
+                    key={`${u.date}-${i}`}
                     className="rounded-lg px-4 py-3"
                     style={{
-                      background: i === 0 ? palette.soft : "#F8FEFF",
+                      background: i === 0 ? palette.soft : palette.cardAlt,
                       border: `1px solid ${i === 0 ? palette.strongBorder : palette.border}`,
                     }}
                   >
@@ -313,10 +327,10 @@ export function HomePage({ onNavigate, onOpenModule, palette, activePaletteId, o
               />
               <div className="relative z-10 mb-3 flex items-center gap-2">
                 <Clock size={18} />
-                <h2 style={{ fontSize: "18px", fontWeight: 900 }}>慢慢装满这个盒子</h2>
+                <h2 style={{ fontSize: "18px", fontWeight: 900 }}>{banner.title}</h2>
               </div>
               <p className="relative z-10" style={{ color: "rgba(255,255,255,0.92)", fontSize: "14px", fontWeight: 700, lineHeight: 1.7 }}>
-                后续内容现在回到主页下方，页面会更自然地向下展开；每次加一个真的会用到的小功能，ToyBox 就多一格可以玩的空间。
+                {banner.text}
               </p>
             </div>
             </Reveal>
@@ -340,7 +354,7 @@ function PaletteSwitcher({
     <div
       className="flex w-fit items-center gap-1.5 rounded-full px-2 py-1.5"
       style={{
-        background: "rgba(255,255,255,0.78)",
+        background: palette.glass,
         border: `1px solid ${palette.border}`,
         boxShadow: `0 10px 24px ${palette.glow}`,
       }}
@@ -374,7 +388,7 @@ function HeroDoodleExtras({ palette }: { palette: ThemePalette }) {
   const reduce = useReducedMotion();
   const faceClass = "absolute right-24 top-44 hidden h-24 w-24 rounded-lg border-4 lg:block";
   const faceStyle: React.CSSProperties = {
-    background: `linear-gradient(135deg, #FFFFFF, ${palette.softAlt})`,
+    background: `linear-gradient(135deg, ${palette.surface}, ${palette.softAlt})`,
     borderColor: palette.primary,
     boxShadow: `0 18px 40px ${palette.glow}`,
     transformOrigin: "100% 100%", // 以右下角为支点

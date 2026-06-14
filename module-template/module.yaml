@@ -34,7 +34,8 @@ backend:
   health_path: /health
 
 # 网关只放行这些业务路径（前缀匹配）。/health、/manifest 等内部接口不经网关暴露。
-# 不声明则默认放行全部——强烈建议每个模块都按需收敛。
+# 默认 fail-closed：未命中 allow_paths 的路径一律拒绝。如确需放行全部，必须显式声明
+# gateway.legacy_allow_all: true（强烈不建议，应始终按需收敛）。
 gateway:
   allow_paths:
     - /greeting
@@ -47,6 +48,9 @@ auth:
   required: true              # 需要登录：未登录不能进入，主站网关会鉴权
   user_context: signed_header # 通过主站签名 Header 获取当前用户
   anonymous_persistence: false
+  # 主站默认下发的用户上下文：sub/uid/uid_display/username/nickname/display_name/avatar_url/roles。
+  # 邮箱属敏感信息，按需获取：仅当下面置为 true，主站才会在签名上下文里附带 email。
+  request_email: false
 
 permissions:
   - welcome:read

@@ -11,12 +11,12 @@ import { AdminPage } from "./components/AdminPage";
 import { fireConfetti } from "./components/anim";
 import { useAuth } from "./api/auth";
 import { api, type ApiModule } from "./api/client";
-import { defaultPalette, themePalettes } from "./theme";
+import { defaultPalette, resolvePalette, themePalettes } from "./theme";
 
 type Page = "home" | "features" | "settings" | "about" | "module" | "admin";
 
 export default function App() {
-  const { user, isLoggedIn, isAdmin, logout } = useAuth();
+  const { user, isLoggedIn, isAdmin, logout, loading } = useAuth();
   const [currentPage, setCurrentPage] = useState<Page>("home");
   const [activeModule, setActiveModule] = useState<ApiModule | null>(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -25,7 +25,8 @@ export default function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [activePaletteId, setActivePaletteId] = useState(defaultPalette.id);
 
-  const palette = themePalettes.find((item) => item.id === activePaletteId) ?? defaultPalette;
+  const basePalette = themePalettes.find((item) => item.id === activePaletteId) ?? defaultPalette;
+  const palette = resolvePalette(basePalette, isDark);
 
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
@@ -60,6 +61,21 @@ export default function App() {
   };
 
   const displayInitial = (user?.nickname || user?.username || "U").charAt(0).toUpperCase();
+
+  // 刷新时先用 HttpOnly Cookie 静默恢复登录态，恢复期间显示极简启动屏：
+  // 既不闪一下「未登录」，也绝不弹出任何登录窗口（满足「刷新仍登录、不弹窗」）。
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center" style={{ fontFamily: "'Nunito', sans-serif", background: palette.pageBg }}>
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-12 h-12 rounded-2xl flex items-center justify-center" style={{ background: palette.activeGradient }}>
+            <span style={{ fontSize: "22px" }}>⚡</span>
+          </div>
+          <div style={{ fontSize: "13px", fontWeight: 700, color: palette.muted }}>ToyBox 加载中…</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen overflow-hidden" style={{ fontFamily: "'Nunito', sans-serif", background: palette.pageBg }}>
@@ -106,7 +122,7 @@ export default function App() {
         {/* Mobile top bar */}
         <div
           className="flex md:hidden items-center justify-between px-4 py-3 flex-shrink-0"
-          style={{ background: "#fff", borderBottom: `1px solid ${palette.border}`, boxShadow: `0 2px 8px ${palette.glow}` }}
+          style={{ background: palette.surface, borderBottom: `1px solid ${palette.border}`, boxShadow: `0 2px 8px ${palette.glow}` }}
         >
           <button onClick={() => setMobileMenuOpen(true)} style={{ background: "none", border: "none", cursor: "pointer", color: palette.ink }}>
             <Menu size={22} />
@@ -172,7 +188,7 @@ export default function App() {
         {/* Mobile bottom nav */}
         <div
           className="flex md:hidden items-center justify-around py-2 flex-shrink-0"
-          style={{ background: "#fff", borderTop: `1px solid ${palette.border}`, boxShadow: `0 -2px 12px ${palette.glow}` }}
+          style={{ background: palette.surface, borderTop: `1px solid ${palette.border}`, boxShadow: `0 -2px 12px ${palette.glow}` }}
         >
           {[
             { id: "home", label: "首页", emoji: "🏠" },
@@ -198,7 +214,7 @@ export default function App() {
         </div>
       </div>
 
-      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} onAuthed={onAuthed} />
+      <AuthModal open={authOpen} onClose={() => setAuthOpen(false)} onAuthed={onAuthed} palette={palette} />
     </div>
   );
 }

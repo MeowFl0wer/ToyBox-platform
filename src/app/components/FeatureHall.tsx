@@ -75,7 +75,7 @@ export function FeatureHall({ palette, isLoggedIn, onOpenAuth, onOpenModule }: F
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="w-full pl-10 pr-4 py-2.5 rounded-xl"
-            style={{ background: "#fff", border: `1.5px solid ${palette.border}`, fontSize: "14px", color: palette.ink, outline: "none", fontFamily: "'Nunito', sans-serif" }}
+            style={{ background: palette.surface, border: `1.5px solid ${palette.border}`, fontSize: "14px", color: palette.ink, outline: "none", fontFamily: "'Nunito', sans-serif" }}
             onFocus={(e) => (e.target.style.borderColor = palette.primary)}
             onBlur={(e) => (e.target.style.borderColor = palette.border)}
           />
@@ -89,7 +89,7 @@ export function FeatureHall({ palette, isLoggedIn, onOpenAuth, onOpenModule }: F
               onClick={() => setActiveTag(cat)}
               className="px-4 py-1.5 rounded-full transition-all inline-flex items-center gap-1"
               style={{
-                background: activeTag === cat ? palette.activeGradient : "#fff",
+                background: activeTag === cat ? palette.activeGradient : palette.surface,
                 color: activeTag === cat ? "#fff" : palette.muted,
                 fontSize: "13px",
                 fontWeight: 700,
@@ -124,7 +124,7 @@ export function FeatureHall({ palette, isLoggedIn, onOpenAuth, onOpenModule }: F
         )}
 
         {/* Bottom note */}
-        <Reveal className="mt-10 rounded-2xl px-6 py-5 flex items-center gap-4" style={{ background: `linear-gradient(135deg, ${palette.soft}, #FFFFFF)`, border: `1.5px dashed ${palette.strongBorder}` }}>
+        <Reveal className="mt-10 rounded-2xl px-6 py-5 flex items-center gap-4" style={{ background: `linear-gradient(135deg, ${palette.soft}, ${palette.surface})`, border: `1.5px dashed ${palette.strongBorder}` }}>
           <Sparkles size={22} style={{ color: palette.secondary, flexShrink: 0 }} />
           <div>
             <div style={{ fontSize: "15px", fontWeight: 800, color: palette.ink, marginBottom: "2px" }}>更多功能陆续上线中</div>
@@ -142,7 +142,7 @@ function FeatureCard({ module: m, palette, onOpen, onToggleFav }: { module: ApiM
     <div
       onClick={onOpen}
       className="relative rounded-2xl p-5 flex flex-col gap-4 transition-all hover:-translate-y-0.5 hover:shadow-md cursor-pointer h-full"
-      style={{ background: "rgba(255,255,255,0.92)", border: `1.5px solid ${palette.border}`, boxShadow: `0 10px 24px ${palette.glow}` }}
+      style={{ background: palette.glass, border: `1.5px solid ${palette.border}`, boxShadow: `0 10px 24px ${palette.glow}` }}
     >
       {/* 收藏按钮（右上角） */}
       <button

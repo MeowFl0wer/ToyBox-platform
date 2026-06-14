@@ -187,7 +187,7 @@ function CardBox({ children, palette }: { children: React.ReactNode; palette: Th
     <Reveal
       immediate
       className="w-full max-w-md rounded-2xl border p-8 text-center"
-      style={{ background: "rgba(255,255,255,0.95)", borderColor: palette.border, boxShadow: `0 16px 40px ${palette.glow}` }}
+      style={{ background: palette.glass, borderColor: palette.border, boxShadow: `0 16px 40px ${palette.glow}` }}
     >
       {children}
     </Reveal>

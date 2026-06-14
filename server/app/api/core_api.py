@@ -1,12 +1,15 @@
 """主站公开接口：工具大厅模块列表、收藏、欢迎模块、站点内容渲染。"""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from ..core import ratelimit
+from ..core.config import DATA_DIR
 from ..core.database import get_db
 from ..core.deps import get_client_ip, get_current_user, get_optional_user
 from ..core.response import APIError, CODE_MODULE_DISABLED, CODE_MODULE_NOT_FOUND, ok
@@ -85,7 +88,7 @@ def issue_module_token(module_id: str, db: Session = Depends(get_db), user: User
         raise APIError(CODE_MODULE_NOT_FOUND, "模块不存在")
     if m.status != "active":
         raise APIError(CODE_MODULE_DISABLED, "模块未启用")
-    return ok({"token": create_module_token(user.id, module_id), "expires_in": 1800})
+    return ok({"token": create_module_token(user.id, module_id, version=user.token_version), "expires_in": 1800})
 
 
 @router.post("/analytics/page-view")
@@ -112,6 +115,24 @@ def report_page_view(
     )
     db.commit()
     return ok()
+
+
+_AVATAR_DIR = DATA_DIR / "avatars"
+_AVATAR_MIME = {"png": "image/png", "jpg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+# 用户内部 id：UUID 字符（防路径穿越/枚举其它文件）
+_AVATAR_ID_RE = re.compile(r"^[0-9a-fA-F-]{8,36}$")
+
+
+@router.get("/avatar/{user_id}")
+def get_avatar(user_id: str):
+    """公开返回某用户头像图片（头像非敏感数据，img 标签需无凭证直接加载）。"""
+    if not _AVATAR_ID_RE.match(user_id):
+        raise APIError(CODE_MODULE_NOT_FOUND, "头像不存在")
+    for ext, mime in _AVATAR_MIME.items():
+        p = _AVATAR_DIR / f"{user_id}.{ext}"
+        if p.exists():
+            return FileResponse(str(p), media_type=mime)
+    raise APIError(CODE_MODULE_NOT_FOUND, "头像不存在")
 
 
 @router.get("/site-contents")

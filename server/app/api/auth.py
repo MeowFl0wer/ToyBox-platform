@@ -2,15 +2,22 @@
 以及需邮箱验证码的：找回密码、修改邮箱、修改密码。"""
 from __future__ import annotations
 
+import hashlib
+import io
+import json
 import logging
+import secrets
+import time
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
+from fastapi.responses import JSONResponse
+from PIL import Image
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from ..core import mailer, ratelimit
-from ..core.config import settings
+from ..core import mailer, ratelimit, totp
+from ..core.config import DATA_DIR, settings
 from ..core.database import get_db
 from ..core.deps import get_client_ip, get_current_user
 from ..core.response import (
@@ -19,7 +26,10 @@ from ..core.response import (
     CODE_CONFLICT,
     CODE_NEED_VERIFY,
     CODE_RATE_LIMITED,
+    CODE_TOTP_ENROLL,
+    CODE_TOTP_REQUIRED,
     CODE_UNAUTHORIZED,
+    fail,
     ok,
 )
 from ..core.security import (
@@ -157,7 +167,7 @@ def _clear_refresh_cookie(response: Response) -> None:
 
 
 def _auth_payload(db: Session, user: User, request: Request, response: Response, remember: bool) -> dict:
-    access = create_access_token(user.id, user.role)
+    access = create_access_token(user.id, user.role, user.token_version)
     raw = _issue_session(db, user, request, remember)
     _set_refresh_cookie(response, raw, remember)
     return {"access_token": access, "user": user_public(user)}
@@ -167,6 +177,106 @@ def _revoke_all_sessions(db: Session, user_id: str) -> None:
     db.query(UserSession).filter(
         UserSession.user_id == user_id, UserSession.revoked_at.is_(None)
     ).update({"revoked_at": _now()})
+
+
+def force_logout_everywhere(db: Session, user: User) -> None:
+    """强制该用户全局登出：撤销全部刷新会话 + 自增 token_version 让所有已签发的 access token 立即失效。
+    用于改密码 / 重置密码 / 重置 2FA 等需要立刻断开旧凭证的场景。"""
+    _revoke_all_sessions(db, user.id)
+    user.token_version = (user.token_version or 0) + 1
+
+
+TOTP_FAIL_WINDOW_S = 900       # 动态码失败计数窗口（15 分钟）
+TOTP_MAX_FAILS = 8             # 窗口内最多失败次数，超过则冷却（账号维度，防密码泄露后撞码）
+TOTP_PENDING_TTL_MIN = 10      # 未完成绑定的临时密钥有效期，过期自动轮换
+RECOVERY_CODE_COUNT = 10       # 绑定时生成的一次性恢复码数量
+
+
+def _recovery_hash(code: str) -> str:
+    norm = code.strip().lower().replace("-", "").replace(" ", "")
+    return hashlib.sha256(f"{settings.secret_key}:recovery:{norm}".encode("utf-8")).hexdigest()
+
+
+def _generate_recovery_codes(user: User) -> list[str]:
+    """生成一组一次性恢复码：明文仅本次返回给用户保存，库里只存哈希。
+    每条 80 bit 熵（恢复码是长期备用凭证，需足够抗离线/在线猜测）。"""
+    codes = []
+    for _ in range(RECOVERY_CODE_COUNT):
+        raw = secrets.token_hex(10)  # 20 位十六进制 = 80 bit
+        codes.append("-".join(raw[i:i + 5] for i in range(0, 20, 5)))  # xxxxx-xxxxx-xxxxx-xxxxx
+    user.totp_recovery = json.dumps([_recovery_hash(c) for c in codes])
+    return codes
+
+
+def _consume_recovery_code(db: Session, user: User, code: str) -> bool:
+    """校验并消费一个恢复码（一次性）。命中则从库中移除并返回 True。"""
+    try:
+        hashes = json.loads(user.totp_recovery or "[]")
+    except (ValueError, TypeError):
+        hashes = []
+    h = _recovery_hash(code)
+    if h in hashes:
+        user.totp_recovery = json.dumps([x for x in hashes if x != h])
+        db.commit()
+        return True
+    return False
+
+
+def _ensure_pending_secret(db: Session, user: User) -> None:
+    """为未绑定的管理员准备/轮换临时 TOTP 密钥：空或超过有效期就重新生成，
+    收敛「仅靠密码保护」的暴露窗口（首次绑定阶段）。"""
+    stale = user.totp_pending_at is None or (_now() - user.totp_pending_at > timedelta(minutes=TOTP_PENDING_TTL_MIN))
+    if user.totp_secret == "" or stale:
+        user.totp_secret = totp.generate_secret()
+        user.totp_pending_at = _now()
+        db.commit()
+
+
+def _admin_totp_gate(db: Session, user: User, totp_code: str | None, recovery_code: str | None = None) -> list[str] | None:
+    """管理员动态口令二次验证（在密码校验通过后调用）。
+    - 账号维度失败限流（totpfail:{id}）：即便密码泄露，也限制分布式撞动态码；
+    - 未绑定：引导绑定 Authenticator（临时密钥带有效期/轮换），输入一次正确动态码即完成绑定，
+      并返回一组一次性恢复码（仅此一次明文返回，供用户保存）；
+    - 已绑定：每次登录需正确的 6 位动态码，或使用一次性恢复码（丢失验证器时）。
+    返回值：仅在「本次刚完成绑定」时返回恢复码明文列表，否则 None。"""
+    fail_key = f"totpfail:{user.id}"
+    if ratelimit.count(fail_key, TOTP_FAIL_WINDOW_S) >= TOTP_MAX_FAILS:
+        raise APIError(CODE_RATE_LIMITED, "动态验证码尝试次数过多，请 15 分钟后再试")
+
+    # 已绑定且使用恢复码登录
+    if user.totp_enabled and recovery_code:
+        if _consume_recovery_code(db, user, recovery_code):
+            return None
+        ratelimit.record(fail_key)
+        raise APIError(CODE_TOTP_REQUIRED, "恢复码无效或已被使用")
+
+    if not user.totp_enabled:
+        _ensure_pending_secret(db, user)
+        enroll = {
+            "totp_enroll": True,
+            "secret": user.totp_secret,
+            "otpauth_uri": totp.provisioning_uri(user.totp_secret, user.username),
+            "account": user.username,
+            "issuer": "ToyBox",
+        }
+        if not totp_code:
+            raise APIError(CODE_TOTP_ENROLL, "管理员账号需绑定动态验证器（Authenticator）", data=enroll)
+        if not totp.verify(user.totp_secret, totp_code):
+            ratelimit.record(fail_key)
+            raise APIError(CODE_TOTP_ENROLL, "动态验证码不正确，请用 App 上最新的 6 位码再试一次", data=enroll)
+        user.totp_enabled = True
+        user.totp_pending_at = None
+        codes = _generate_recovery_codes(user)  # 绑定成功 → 生成一次性恢复码
+        db.commit()
+        return codes
+
+    # 已绑定：校验动态码
+    if not totp_code:
+        raise APIError(CODE_TOTP_REQUIRED, "请输入 Authenticator 动态验证码")
+    if not totp.verify(user.totp_secret, totp_code):
+        ratelimit.record(fail_key)
+        raise APIError(CODE_TOTP_REQUIRED, "动态验证码不正确")
+    return None
 
 
 # ============ 注册 ============
@@ -203,6 +313,7 @@ def register(body: RegisterIn, request: Request, response: Response, db: Session
         password_hash=hash_password(body.password),
         role="user",
         status="active",
+        email_verified=True,  # 注册必须通过邮箱验证码，落库即为已验证
     )
     db.add(user)
     db.flush()
@@ -239,8 +350,17 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
     if user.status != "active":
         raise APIError(CODE_UNAUTHORIZED, "账号已被禁用或注销")
 
-    ratelimit.clear(acct_key)  # 登录成功，清除失败计数（解除步进验证）
+    # 管理员动态口令二次验证（首登引导绑定 Authenticator，之后每次需输入动态码 / 恢复码）
+    # 注意：放在清除失败计数之前——TOTP 自身做账号维度失败限流，完整通过后再统一清计数。
+    recovery_codes = None
+    if user.role == "admin":
+        recovery_codes = _admin_totp_gate(db, user, body.totp, body.recovery_code)
+
+    ratelimit.clear(acct_key)              # 完整登录成功，清除密码失败计数（解除步进验证）
+    ratelimit.clear(f"totpfail:{user.id}")  # 清除动态码失败计数
     data = _auth_payload(db, user, request, response, body.remember)
+    if recovery_codes:
+        data = {**data, "recovery_codes": recovery_codes}  # 刚绑定 → 一次性返回恢复码供保存
     db.commit()
     return ok(data, message="登录成功")
 
@@ -271,6 +391,15 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
     user = db.get(User, sess.user_id)
     if not user or user.status != "active":
         raise APIError(CODE_UNAUTHORIZED, "账号不可用")
+    # 管理员必须完成 2FA 绑定才能持有会话：拒绝「未绑定 TOTP 的管理员」静默续期
+    #（堵住升级前遗留的管理员 cookie 绕过首次绑定的情况），撤销该会话并清 Cookie，强制走登录→绑定流程。
+    # 注意：这里直接返回带「删除 Cookie」头的响应——若改用 raise，全局异常处理器会另起响应、丢掉清 Cookie。
+    if user.role == "admin" and not user.totp_enabled:
+        sess.revoked_at = _now()
+        db.commit()
+        rej = JSONResponse(status_code=401, content=fail(CODE_UNAUTHORIZED, "管理员需重新登录并绑定动态验证器"))
+        rej.delete_cookie(REFRESH_COOKIE, path=COOKIE_PATH)
+        return rej
     remember = sess.remember  # 续期时保持原来的记住我设置
     sess.revoked_at = _now()
     data = _auth_payload(db, user, request, response, remember)
@@ -307,6 +436,57 @@ def update_profile(body: ProfileIn, user: User = Depends(get_current_user), db: 
     return ok(user_public(user), message="资料已更新")
 
 
+# ---------- 头像上传 ----------
+AVATAR_DIR = DATA_DIR / "avatars"
+AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+_MAX_AVATAR_BYTES = 2 * 1024 * 1024     # 上传体积上限 2MB
+_AVATAR_OUT_SIZE = 512                   # 重编码后边长上限（等比缩放）
+_MAX_SRC_PIXELS = 24_000_000            # 源图像素上限，挡解压炸弹（~24MP）
+
+# 仅接受图片：用魔术字节（而非仅靠扩展名/Content-Type）判定，防伪造类型
+def _sniff_image(data: bytes) -> str | None:
+    if data[:8].startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data[:3] == b"\xff\xd8\xff":
+        return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    return None
+
+
+@router.post("/avatar")
+async def upload_avatar(file: UploadFile = File(...), user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    # 用户维度频率限制：每小时最多 10 次（与 IP 限流互补，防刷爆磁盘/CPU）
+    if not ratelimit.allow(f"avatar:user:{user.id}", 10, 3600):
+        raise APIError(CODE_RATE_LIMITED, "头像上传过于频繁，请稍后再试")
+    raw = await file.read(_MAX_AVATAR_BYTES + 1)
+    if len(raw) > _MAX_AVATAR_BYTES:
+        raise APIError(CODE_BAD_PARAM, "图片过大，请控制在 2MB 以内")
+    if not _sniff_image(raw):
+        raise APIError(CODE_BAD_PARAM, "仅支持 PNG / JPG / GIF / WEBP 图片")
+    # 解码 → 取首帧 → 等比缩放 → 重编码为规整 PNG：
+    # 去掉动画、EXIF 等元数据与潜在畸形结构，并用像素上限挡解压炸弹（纵深防御，不只信任魔术字节）。
+    Image.MAX_IMAGE_PIXELS = _MAX_SRC_PIXELS
+    try:
+        with Image.open(io.BytesIO(raw)) as im:
+            im.seek(0)  # 动图只取第一帧
+            rgba = im.convert("RGBA")  # 触发实际解码；畸形/截断会在此抛错
+            rgba.thumbnail((_AVATAR_OUT_SIZE, _AVATAR_OUT_SIZE))
+            out = io.BytesIO()
+            rgba.save(out, format="PNG", optimize=True)
+    except Exception:  # noqa: BLE001 解压炸弹 / 截断 / 畸形图片
+        raise APIError(CODE_BAD_PARAM, "图片无法解析，请更换一张")
+    # 清掉该用户旧头像（任意扩展名），统一写为 png；文件名用内部 UUID，外部不可枚举他人
+    for old in AVATAR_DIR.glob(f"{user.id}.*"):
+        old.unlink(missing_ok=True)
+    (AVATAR_DIR / f"{user.id}.png").write_bytes(out.getvalue())
+    user.avatar_url = f"/api/core/avatar/{user.id}?v={int(time.time())}"  # 带版本号破缓存
+    db.commit()
+    return ok(user_public(user), message="头像已更新")
+
+
 # ============ 找回密码（未登录，邮箱验证码）============
 @router.post("/password/forgot")
 def forgot_password(body: ForgotPasswordIn, request: Request, db: Session = Depends(get_db)):
@@ -334,7 +514,7 @@ def reset_password(body: ResetPasswordIn, request: Request, db: Session = Depend
     if not user or user.status != "active":
         raise APIError(CODE_BAD_PARAM, "账号不可用")
     user.password_hash = hash_password(body.new_password)
-    _revoke_all_sessions(db, user.id)
+    force_logout_everywhere(db, user)  # 撤销旧会话 + 让旧 access token 失效
     db.commit()
     return ok(message="密码已重置，请用新密码登录")
 
@@ -362,6 +542,7 @@ def change_email(body: ChangeEmailIn, user: User = Depends(get_current_user), db
     if db.query(User).filter(User.email == new_email, User.id != user.id).first():
         raise APIError(CODE_CONFLICT, "该邮箱已被占用")
     user.email = new_email
+    user.email_verified = True  # 新邮箱已通过验证码确认
     db.commit()
     return ok(user_public(user), message="邮箱已更新")
 
@@ -381,6 +562,6 @@ def change_password(body: PasswordIn, user: User = Depends(get_current_user), db
         raise APIError(CODE_BAD_PARAM, "原密码不正确")
     _consume_code(db, user.email, "change_password", body.code)
     user.password_hash = hash_password(body.new_password)
-    _revoke_all_sessions(db, user.id)
+    force_logout_everywhere(db, user)  # 撤销旧会话 + 让旧 access token 失效
     db.commit()
     return ok(message="密码已修改，请重新登录")

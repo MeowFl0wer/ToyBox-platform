@@ -39,6 +39,13 @@ class User(Base):
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     avatar_url: Mapped[str] = mapped_column(Text, nullable=False, default="")
     bio: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # 是否已通过邮箱验证码验证
+    # 管理员动态口令（TOTP）二次验证
+    totp_secret: Mapped[str] = mapped_column(String(64), nullable=False, default="")   # base32 密钥
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # 已完成绑定
+    totp_pending_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)   # 未完成绑定的密钥生成时间（过期则轮换）
+    totp_recovery: Mapped[str] = mapped_column(Text, nullable=False, default="")        # 一次性恢复码哈希列表(JSON)
+    token_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)      # 自增即让所有旧 access token 失效（强制全局登出）
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="user")     # user | admin
     status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")  # active | disabled | deleted
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)

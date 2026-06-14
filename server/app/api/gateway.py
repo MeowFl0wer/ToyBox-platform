@@ -92,25 +92,35 @@ async def gateway(module_id: str, path: str, request: Request, db: Session = Dep
     user = None
     auth = request.headers.get("Authorization", "")
     if auth.lower().startswith("bearer "):
-        uid = decode_module_token(auth[7:].strip(), module_id)
-        if uid:
-            u = db.get(User, uid)
-            if u and u.status == "active":
+        tok = decode_module_token(auth[7:].strip(), module_id)
+        if tok:
+            u = db.get(User, tok.get("sub"))
+            # 绑定 token_version：改密码/重置 2FA 后旧模块 token 立即失效
+            if u and u.status == "active" and int(tok.get("ver", 0)) == int(u.token_version or 0):
                 user = u
     if m.auth_required and not user:
         raise APIError(CODE_UNAUTHORIZED, "请先登录")
 
     exp = int(time.time()) + 300
     if user:
+        # 下发给模块的「主站用户资料」：包含展示所需的非敏感字段。
+        # 邮箱按需下发：仅当模块在 module.yaml 声明 auth.request_email: true 才给（最小权限）。
         payload = {
-            "sub": user.id,
-            "username": user.nickname or user.username,
-            "email": user.email,
+            "sub": user.id,                          # 签名过的内部用户 id（模块据此隔离数据）
+            "uid": user.uid,                         # 数字 uid
+            "uid_display": user.uid_display,         # 展示用 000001
+            "username": user.username,               # 登录名（唯一）
+            "nickname": user.nickname,               # 昵称（可空）
+            "display_name": user.nickname or user.username,  # 展示名（已回退）
+            "avatar_url": user.avatar_url,           # 头像（站内相对路径，同源可直接加载）
             "roles": [user.role],
+            "ver": user.token_version,
             "module_id": module_id,
             "auth_required": m.auth_required,
             "exp": exp,
         }
+        if ((m.manifest.get("auth") or {}).get("request_email") is True) if isinstance(m.manifest, dict) else False:
+            payload["email"] = user.email
         # 记录最近使用（主站层偏好，非模块业务数据）
         pref = (
             db.query(ModuleUserPreference)

@@ -13,6 +13,8 @@ CODE_BAD_PARAM = 10004          # 参数错误
 CODE_CONFLICT = 10005           # 资源冲突（如用户名已存在）
 CODE_RATE_LIMITED = 10006       # 请求过于频繁
 CODE_NEED_VERIFY = 10007        # 需要额外验证（如登录失败过多后要求邮箱验证码）
+CODE_TOTP_ENROLL = 10008        # 管理员首次登录：需绑定动态验证器（返回密钥/配对串）
+CODE_TOTP_REQUIRED = 10009      # 管理员已绑定：需输入动态验证码
 CODE_MODULE_NOT_FOUND = 20001   # 模块不存在
 CODE_MODULE_DISABLED = 20002    # 模块未启用
 CODE_CONTENT_NOT_FOUND = 30001  # 内容不存在
@@ -27,6 +29,8 @@ _HTTP = {
     CODE_CONFLICT: 409,
     CODE_RATE_LIMITED: 429,
     CODE_NEED_VERIFY: 401,
+    CODE_TOTP_ENROLL: 401,
+    CODE_TOTP_REQUIRED: 401,
     CODE_MODULE_NOT_FOUND: 404,
     CODE_MODULE_DISABLED: 403,
     CODE_CONTENT_NOT_FOUND: 404,

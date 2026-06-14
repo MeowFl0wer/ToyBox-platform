@@ -37,6 +37,8 @@ class LoginIn(BaseModel):
     password: str = Field(min_length=1, max_length=72)
     remember: bool = False  # 在此设备记住我（持久化刷新 Cookie）
     code: str | None = Field(default=None, max_length=6)  # 失败过多触发的步进邮箱验证码
+    totp: str | None = Field(default=None, max_length=6)  # 管理员动态口令（Authenticator）
+    recovery_code: str | None = Field(default=None, max_length=40)  # 管理员恢复码（丢失验证器时）
 
 
 class LoginSendCodeIn(BaseModel):
@@ -145,12 +147,17 @@ class ModuleUpdateIn(BaseModel):
 # ---------- 后台：内容 ----------
 class SiteContentIn(BaseModel):
     title: str = Field(default="", max_length=200)
-    content_type: str = Field(default="plain_text", pattern=r"^(plain_text|markdown|rich_text|notice|link_list)$")
+    content_type: str = Field(default="plain_text", pattern=r"^(plain_text|markdown|rich_text|notice|link_list|json)$")
     content_value: dict = Field(default_factory=dict)
     status: str = Field(default="published", pattern=r"^(draft|published)$")
 
 
 # ---------- 后台：用户 ----------
+class AdminConfirmIn(BaseModel):
+    """敏感操作（禁用 / 删除用户）的二次确认：要求重输管理员登录密码。"""
+    password: str = Field(min_length=1, max_length=72)
+
+
 class AdminUserCreateIn(BaseModel):
     username: str = Field(min_length=3, max_length=20)
     email: EmailStr

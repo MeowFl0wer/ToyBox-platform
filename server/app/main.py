@@ -42,6 +42,9 @@ class SecurityHeaders(BaseHTTPMiddleware):
         # 模块静态资源即使被直接顶层访问也强制沙箱化（不透明源），避免模块 XSS 升级为主站 XSS
         if request.url.path.startswith("/module-assets"):
             resp.headers["Content-Security-Policy"] = "sandbox allow-scripts"
+            # iframe 用 sandbox(allow-scripts) → 不透明源(Origin: null)。<script type="module"> 一律以 CORS
+            # 方式拉取，没有 ACAO 会被拦截导致整页空白。这些是公开静态产物，放开跨源读取是安全的。
+            resp.headers["Access-Control-Allow-Origin"] = "*"
         # 网关响应是 API 数据：若模块意外返回 text/html，用户直接打开该 URL 也不能执行脚本
         elif request.url.path.startswith("/api/modules"):
             resp.headers["Content-Security-Policy"] = "sandbox"

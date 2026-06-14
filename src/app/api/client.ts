@@ -91,8 +91,9 @@ export const api = {
   sendCode: (email: string) => request("POST", "/api/auth/register/send-code", { email }),
   register: (b: { email: string; code: string; username: string; password: string; nickname?: string }) =>
     request<{ access_token: string; user: ApiUser }>("POST", "/api/auth/register", b),
-  login: (account: string, password: string, remember = false) =>
-    request<{ access_token: string; user: ApiUser }>("POST", "/api/auth/login", { account, password, remember }),
+  login: (account: string, password: string, remember = false, code?: string) =>
+    request<{ access_token: string; user: ApiUser }>("POST", "/api/auth/login", { account, password, remember, code }),
+  loginSendCode: (account: string) => request<{ dev_code?: string }>("POST", "/api/auth/login/send-code", { account }),
   logout: () => request("POST", "/api/auth/logout", {}),
   me: () => request<ApiUser>("GET", "/api/auth/me"),
   refresh: tryRefresh,

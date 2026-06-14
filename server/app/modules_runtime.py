@@ -87,6 +87,20 @@ def _validate_manifest(m: dict) -> str:
         raise ValueError("module.yaml 路径不合法（不允许 .. 或绝对路径）")
     if not hp.startswith("/"):
         raise ValueError("health_path 必须以 / 开头")
+
+    # 网关白名单强校验（防类型写错绕过 fail-closed）
+    gw = m.get("gateway") or {}
+    if not isinstance(gw, dict):
+        raise ValueError("module.yaml: gateway 必须是对象")
+    if "legacy_allow_all" in gw and not isinstance(gw["legacy_allow_all"], bool):
+        raise ValueError("module.yaml: gateway.legacy_allow_all 必须是布尔值")
+    if bool((m.get("backend") or {}).get("enabled")) and gw.get("legacy_allow_all") is not True:
+        allow = gw.get("allow_paths")
+        if not isinstance(allow, list) or not allow or not all(isinstance(p, str) for p in allow):
+            raise ValueError("module.yaml: gateway.allow_paths 必须是非空字符串列表（或显式 legacy_allow_all: true）")
+        for p in allow:
+            if not p.startswith("/") or p == "/" or ".." in p or "://" in p:
+                raise ValueError(f"module.yaml: gateway.allow_paths 路径非法：{p}")
     return str(mid)
 
 

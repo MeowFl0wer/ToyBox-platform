@@ -53,10 +53,15 @@ async def gateway(module_id: str, path: str, request: Request, db: Session = Dep
     # 仅 gateway.allow_paths 命中的业务路径放行；模块后端的 /health、/admin、/internal 等不暴露。
     # 旧/特殊模块若确需放行全部，必须在 module.yaml 显式声明 gateway.legacy_allow_all: true。
     gw = m.manifest.get("gateway", {}) if isinstance(m.manifest, dict) else {}
-    if not gw.get("legacy_allow_all"):
-        allow = gw.get("allow_paths") or []
+    if gw.get("legacy_allow_all") is not True:  # 必须严格布尔 true 才放行全部
+        allow = gw.get("allow_paths")
+        allow = allow if isinstance(allow, list) else []  # 非 list（如误写成字符串）一律视为空 → 拒
         sub = "/" + path
-        if not any(sub == a or sub.startswith(a.rstrip("/") + "/") for a in allow):
+        ok_path = any(
+            isinstance(a, str) and a.startswith("/") and a != "/" and (sub == a or sub.startswith(a.rstrip("/") + "/"))
+            for a in allow
+        )
+        if not ok_path:
             raise APIError(CODE_MODULE_NOT_FOUND, "该模块接口未开放")
 
     # 鉴权改用模块级 token（Bearer），不再凭 Cookie——iframe 已 sandbox 为不透明源、拿不到 Cookie

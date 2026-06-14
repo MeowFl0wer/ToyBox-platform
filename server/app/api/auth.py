@@ -17,6 +17,7 @@ from ..core.response import (
     APIError,
     CODE_BAD_PARAM,
     CODE_CONFLICT,
+    CODE_NEED_VERIFY,
     CODE_RATE_LIMITED,
     CODE_UNAUTHORIZED,
     ok,
@@ -36,6 +37,7 @@ from ..schemas import (
     EmailSendCodeIn,
     ForgotPasswordIn,
     LoginIn,
+    LoginSendCodeIn,
     PasswordIn,
     ProfileIn,
     RegisterIn,
@@ -216,19 +218,46 @@ def login(body: LoginIn, request: Request, response: Response, db: Session = Dep
     if not ratelimit.allow(f"login:ip:{ip}", 15, 300):
         raise APIError(CODE_RATE_LIMITED, "登录尝试过于频繁，请稍后再试")
     account = body.account.strip()
-    # 账号维度失败限流：抵御分布式撞库（多 IP 刷同一账号）。15 分钟内失败满 10 次冷却。
+    # 账号维度失败限流：抵御分布式撞库（多 IP 刷同一账号）。失败满阈值后改为「要求邮箱验证码」，
+    # 而不是硬阻断——这样攻击者刷错也不会把真实用户锁在门外（真实用户能收码、攻击者收不到）。
     acct_key = f"loginfail:{account.lower()}"
-    if ratelimit.count(acct_key, 900) >= 10:
-        raise APIError(CODE_RATE_LIMITED, "该账号登录失败次数过多，请 15 分钟后再试")
+    stepup = ratelimit.count(acct_key, 900) >= 10
     user = db.query(User).filter(or_(User.username == account, User.email == account.lower())).first()
+
+    if stepup:
+        if not body.code:
+            raise APIError(CODE_NEED_VERIFY, "为确认是本人操作，请获取并输入邮箱验证码")
+        # 校验邮箱验证码（针对该账号邮箱）；无此账号则按通用失败处理，避免枚举
+        if not user:
+            ratelimit.record(acct_key)
+            raise APIError(CODE_UNAUTHORIZED, "账号或密码错误")
+        _consume_code(db, user.email, "login", body.code)  # 验证码错/过期会抛 400
+
     if not user or not verify_password(body.password, user.password_hash):
         ratelimit.record(acct_key)  # 仅失败计数
         raise APIError(CODE_UNAUTHORIZED, "账号或密码错误")
     if user.status != "active":
         raise APIError(CODE_UNAUTHORIZED, "账号已被禁用或注销")
+
+    ratelimit.clear(acct_key)  # 登录成功，清除失败计数（解除步进验证）
     data = _auth_payload(db, user, request, response, body.remember)
     db.commit()
     return ok(data, message="登录成功")
+
+
+@router.post("/login/send-code")
+def login_send_code(body: LoginSendCodeIn, request: Request, db: Session = Depends(get_db)):
+    """登录失败过多触发步进验证时，把验证码发到该账号邮箱。防枚举：不暴露账号是否存在。"""
+    ip = get_client_ip(request)
+    account = body.account.strip()
+    if not ratelimit.allow(f"loginsendcode:ip:{ip}", 10, 3600) or not ratelimit.allow(f"loginsendcode:{account.lower()}", 1, 60):
+        raise APIError(CODE_RATE_LIMITED, "操作过于频繁，请稍后再试")
+    user = db.query(User).filter(or_(User.username == account, User.email == account.lower())).first()
+    data: dict = {"sent": True, "expires_in_min": settings.verify_code_ttl_min}
+    if user and user.status == "active":
+        code = _create_code(db, user.email, "login")
+        data = _dev(data, code)
+    return ok(data, message="如该账号存在，验证码已发送到其邮箱")
 
 
 @router.post("/refresh")

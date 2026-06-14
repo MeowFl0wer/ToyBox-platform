@@ -36,6 +36,11 @@ class LoginIn(BaseModel):
     account: str = Field(min_length=3, max_length=255)  # 用户名或邮箱
     password: str = Field(min_length=1, max_length=72)
     remember: bool = False  # 在此设备记住我（持久化刷新 Cookie）
+    code: str | None = Field(default=None, max_length=6)  # 失败过多触发的步进邮箱验证码
+
+
+class LoginSendCodeIn(BaseModel):
+    account: str = Field(min_length=3, max_length=255)
 
 
 class ProfileIn(BaseModel):

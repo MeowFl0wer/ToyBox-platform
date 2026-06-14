@@ -34,3 +34,9 @@ def record(key: str) -> None:
     """记录一次事件（如一次登录失败）。"""
     with _lock:
         _hits.setdefault(key, []).append(time.time())
+
+
+def clear(key: str) -> None:
+    """清空某 key 的计数（如登录成功后清除失败次数）。"""
+    with _lock:
+        _hits.pop(key, None)

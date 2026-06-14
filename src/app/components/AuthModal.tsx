@@ -27,6 +27,9 @@ export function AuthModal({ open, onClose, onAuthed }: AuthModalProps) {
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [remember, setRemember] = useState(true);
+  const [needCode, setNeedCode] = useState(false);
+  const [loginCode, setLoginCode] = useState("");
+  const [loginDevCode, setLoginDevCode] = useState("");
 
   if (!open) return null;
 
@@ -35,6 +38,7 @@ export function AuthModal({ open, onClose, onAuthed }: AuthModalProps) {
     setAccount(""); setUsername(""); setNickname(""); setEmail("");
     setPassword(""); setConfirmPwd(""); setCode(""); setDevCode("");
     setError(""); setNotice(""); setBusy(false); setShowPwd(false); setRemember(true);
+    setNeedCode(false); setLoginCode(""); setLoginDevCode("");
   };
   const close = () => { reset(); onClose(); };
   const success = () => { reset(); onAuthed(); };
@@ -52,12 +56,43 @@ export function AuthModal({ open, onClose, onAuthed }: AuthModalProps) {
     }
   };
 
-  const doLogin = () =>
-    run(async () => {
-      if (!account.trim() || !password) throw new ApiError(0, "请输入账号和密码");
-      const data = await api.login(account.trim(), password, remember);
+  const doLogin = async () => {
+    setError("");
+    setNotice("");
+    if (!account.trim() || !password) {
+      setError("请输入账号和密码");
+      return;
+    }
+    if (needCode && !/^\d{6}$/.test(loginCode)) {
+      setError("请输入 6 位邮箱验证码");
+      return;
+    }
+    setBusy(true);
+    try {
+      const data = await api.login(account.trim(), password, remember, needCode ? loginCode : undefined);
       applyAuth(data);
       success();
+    } catch (e) {
+      if (e instanceof ApiError && e.code === 10007) {
+        setNeedCode(true); // 失败过多 → 需要邮箱验证码（不再硬锁正确密码）
+        setError(e.message);
+      } else {
+        setError(e instanceof ApiError ? e.message : "网络错误，请稍后再试");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendLoginCode = () =>
+    run(async () => {
+      if (!account.trim()) throw new ApiError(0, "请输入账号");
+      const d = await api.loginSendCode(account.trim());
+      if (d?.dev_code) {
+        setLoginDevCode(d.dev_code);
+        setLoginCode(d.dev_code);
+      }
+      setNotice("验证码已发送到该账号邮箱");
     });
 
   const doSendCode = () =>
@@ -200,6 +235,34 @@ export function AuthModal({ open, onClose, onAuthed }: AuthModalProps) {
                   忘记密码？
                 </button>
               </div>
+              {needCode && (
+                <>
+                  {loginDevCode && (
+                    <div style={{ fontSize: "12px", color: "#9B6A16", background: "#FFF4C9", borderRadius: "10px", padding: "8px 12px", textAlign: "center", fontWeight: 700 }}>
+                      开发模式验证码：{loginDevCode}（已自动填入）
+                    </div>
+                  )}
+                  <div className="flex gap-2">
+                    <input
+                      value={loginCode}
+                      onChange={(e) => setLoginCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      maxLength={6}
+                      inputMode="numeric"
+                      placeholder="邮箱验证码"
+                      className="flex-1 rounded-xl text-center"
+                      style={{ padding: "10px", border: "1.5px solid rgba(56,189,248,0.25)", background: "#FFFDF8", color: "#2D1F18", outline: "none", fontFamily: "'Nunito', sans-serif", fontSize: "16px", fontWeight: 700, letterSpacing: "4px" }}
+                    />
+                    <button
+                      onClick={sendLoginCode}
+                      disabled={busy}
+                      className="rounded-xl px-3 flex-shrink-0"
+                      style={{ background: "#E6F7FF", color: "#036E94", border: "1.5px solid rgba(56,189,248,0.3)", fontSize: "13px", fontWeight: 800, cursor: busy ? "not-allowed" : "pointer", fontFamily: "'Nunito', sans-serif", whiteSpace: "nowrap" }}
+                    >
+                      发送验证码
+                    </button>
+                  </div>
+                </>
+              )}
               <PrimaryButton onClick={doLogin} busy={busy}>登录</PrimaryButton>
               <div className="text-center" style={{ fontSize: "13px", color: "#8C7B72" }}>
                 还没有账号？{" "}

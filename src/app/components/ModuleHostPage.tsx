@@ -117,6 +117,7 @@ function ModuleFrame({ module, palette }: { module: ApiModule; palette: ThemePal
           method: (msg.method || "GET").toUpperCase(),
           headers,
           credentials: "omit", // 不带 Cookie，纯 token 鉴权
+          redirect: "manual", // 不跟随重定向（网关也已禁用并拒绝 3xx）
           body: msg.body !== undefined && msg.body !== null ? JSON.stringify(msg.body) : undefined,
         });
       };

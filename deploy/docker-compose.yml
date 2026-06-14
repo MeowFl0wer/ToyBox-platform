@@ -38,7 +38,7 @@ services:
       SYSTEM: 0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks: [toybox_net]
+    networks: [deploy_net]      # 仅在部署专网，模块/业务容器无法访问到它
 
   backend:
     build:
@@ -76,7 +76,7 @@ services:
     volumes:
       - data:/app/server/data
     depends_on: [db, socket-proxy]
-    networks: [toybox_net]
+    networks: [toybox_net, deploy_net]   # 业务网取 Postgres / 建模块容器；部署专网访问 socket-proxy
 
   web:
     build:
@@ -84,9 +84,12 @@ services:
       dockerfile: deploy/web.Dockerfile
     container_name: toybox-web
     restart: unless-stopped
+    # ⚠️ 生产必须 HTTPS：dev_mode=false 时刷新 Cookie 为 Secure，仅 HTTP(80) 会导致登录态无法保持。
+    #    请「启用下方 443 + 证书（见 nginx.conf 模板）」或「置于已终止 TLS 的外层反代之后」，
+    #    不要把当前仅 80 的配置直接作为公网入口。
     ports:
       - "80:80"
-      # - "443:443"   # 配置 TLS 后启用
+      # - "443:443"   # 配置 TLS 后启用（并在 nginx.conf 启用 443 server 块与 80→443 跳转）
     volumes:
       - data:/var/www:ro      # 提供 /module-assets（= data/modules/assets）
     depends_on: [backend]
@@ -98,7 +101,10 @@ volumes:
 
 networks:
   toybox_net:
-    name: toybox_net          # 固定名，模块容器 --network toybox_net 需与此一致
+    name: toybox_net          # 业务网：固定名，模块容器 --network toybox_net 需与此一致
+  deploy_net:
+    name: deploy_net          # 部署专网：仅 socket-proxy + deploy_worker，internal 不通外网
+    internal: true
 
 # 注：若不希望 worker 在主机构建镜像，可改为 CI 构建并推镜像仓库、worker 仅 pull 运行，
 # 这样 socket-proxy 仅需 CONTAINERS/IMAGES/POST，进一步收敛权限。

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import posixpath
 import time
 import urllib.error
 import urllib.request
@@ -29,16 +30,30 @@ router = APIRouter(prefix="/api/modules", tags=["gateway"])
 
 _HOP_BY_HOP = {"connection", "keep-alive", "transfer-encoding", "content-length", "host"}
 
+# 禁止跟随模块后端的 30x 重定向：否则模块可借重定向把请求导向 /admin、/health 或外部地址，绕过白名单
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):  # noqa: ANN002, ANN003, D102
+        return None
+
+
+_opener = urllib.request.build_opener(_NoRedirect)
+_REDIRECT_REJECT = json.dumps({"code": 20003, "message": "模块返回了非法重定向", "data": None}).encode("utf-8")
+_NO_RESPONSE = json.dumps({"code": 20003, "message": "模块无响应", "data": None}).encode("utf-8")
+
 
 def _forward(method: str, url: str, body: bytes, headers: dict[str, str]) -> tuple[int, bytes, str]:
     req = urllib.request.Request(url, data=body or None, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with _opener.open(req, timeout=30) as r:
+            if 300 <= r.status < 400:  # 模块业务接口不应重定向
+                return 502, _REDIRECT_REJECT, "application/json"
             return r.status, r.read(), r.headers.get("Content-Type", "application/json")
     except urllib.error.HTTPError as e:
+        if 300 <= e.code < 400:  # 禁用重定向后 3xx 会以 HTTPError 抛出
+            return 502, _REDIRECT_REJECT, "application/json"
         return e.code, e.read(), e.headers.get("Content-Type", "application/json")
     except Exception:  # noqa: BLE001
-        return 502, json.dumps({"code": 20003, "message": "模块无响应", "data": None}).encode(), "application/json"
+        return 502, _NO_RESPONSE, "application/json"
 
 
 @router.api_route("/{module_id}/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
@@ -52,11 +67,19 @@ async def gateway(module_id: str, path: str, request: Request, db: Session = Dep
     # 转发路径白名单（module.yaml 的 gateway.allow_paths）：fail-closed —— 未声明就一律拒绝，
     # 仅 gateway.allow_paths 命中的业务路径放行；模块后端的 /health、/admin、/internal 等不暴露。
     # 旧/特殊模块若确需放行全部，必须在 module.yaml 显式声明 gateway.legacy_allow_all: true。
+    # 路径规范化 + 可疑字符拒绝（防 ../、%2e/%2f/%5c、控制字符绕过白名单或打到未开放路径）
+    raw_path = request.scope.get("raw_path", b"").decode("latin-1", "ignore").lower()
+    if any(bad in raw_path for bad in ("%2e", "%2f", "%5c", "%00")):
+        raise APIError(CODE_MODULE_NOT_FOUND, "该模块接口未开放")
+    if ".." in path or "\\" in path or any(ord(c) < 32 for c in path):
+        raise APIError(CODE_MODULE_NOT_FOUND, "该模块接口未开放")
+    sub = posixpath.normpath("/" + path)  # 规范化后的安全路径，用于匹配与转发
+    if not sub.startswith("/") or ".." in sub:
+        raise APIError(CODE_MODULE_NOT_FOUND, "该模块接口未开放")
+
     gw = m.manifest.get("gateway", {}) if isinstance(m.manifest, dict) else {}
     if gw.get("legacy_allow_all") is not True:  # 必须严格布尔 true 才放行全部
-        allow = gw.get("allow_paths")
-        allow = allow if isinstance(allow, list) else []  # 非 list（如误写成字符串）一律视为空 → 拒
-        sub = "/" + path
+        allow = gw.get("allow_paths") if isinstance(gw.get("allow_paths"), list) else []  # 非 list 一律视为空 → 拒
         ok_path = any(
             isinstance(a, str) and a.startswith("/") and a != "/" and (sub == a or sub.startswith(a.rstrip("/") + "/"))
             for a in allow
@@ -115,7 +138,7 @@ async def gateway(module_id: str, path: str, request: Request, db: Session = Dep
     if ct:
         headers["Content-Type"] = ct
 
-    target = m.internal_backend_url.rstrip("/") + "/" + path
+    target = m.internal_backend_url.rstrip("/") + sub  # 只转发规范化后的安全路径
     if request.url.query:
         target += "?" + request.url.query
     body = await request.body()

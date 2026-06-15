@@ -146,6 +146,7 @@ function ModulesPanel({ palette }: { palette: ThemePalette }) {
                 <div className="flex items-center gap-2">
                   <span style={{ fontSize: "14px", fontWeight: 800, color: palette.ink }}>{m.name}</span>
                   <Tag palette={palette}>{m.status === "active" ? "可用" : "即将上线"}</Tag>
+                  {m.runtime_mode && <Tag palette={palette}>{RUNTIME_LABELS[m.runtime_mode] || m.runtime_mode}</Tag>}
                   {m.hidden && <Tag palette={palette} tone="warn">已隐藏</Tag>}
                   {m.builtin && <Tag palette={palette}>内置</Tag>}
                 </div>
@@ -177,6 +178,13 @@ function ModulesPanel({ palette }: { palette: ThemePalette }) {
     </Panel>
   );
 }
+
+const RUNTIME_LABELS: Record<string, string> = {
+  static: "纯前端",
+  platform_storage: "托管存储",
+  container: "容器",
+  lazy_container: "懒启动容器",
+};
 
 const JOB_STAGES: Record<string, string> = {
   pending: "排队中", cloning: "克隆仓库", validating: "校验 module.yaml",

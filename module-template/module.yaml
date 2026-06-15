@@ -26,6 +26,21 @@ display:
   min_width: 640
   min_height: 420
 
+# 运行模式（模块分级）：决定主站如何部署本模块。
+#   static            纯前端：只构建 frontend/dist，不起后端、不建库（如计算器、随机选择器）
+#   platform_storage  纯前端 + 平台托管存储：用主站 storage API 存少量 JSON，无需自带后端（如 Todo、日记）
+#   container         常驻后端容器：当前模式，需服务端能力/密钥/数据库时用
+#   lazy_container    懒启动容器：偶尔使用、可接受冷启动（懒启动为后续阶段，目前按常驻容器运行）
+# 不声明时按旧契约推断：backend.enabled=true → container，否则 → static。
+# resources / idle_timeout 仅容器模式生效；resources 会被主站上限钳制。
+runtime:
+  mode: container
+  resources:
+    memory: 256m
+    cpus: 0.5
+    pids: 128
+  # idle_timeout: 1800   # 仅 lazy_container 用
+
 backend:
   enabled: true
   type: fastapi

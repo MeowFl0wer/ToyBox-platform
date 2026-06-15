@@ -1,6 +1,8 @@
 """请求/响应 schema。所有用户输入在此做强类型 + 长度 + 格式校验（防注入/超长/畸形输入第一道闸）。"""
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
 from .core.security import USERNAME_RE, clean_text, is_safe_url
@@ -116,6 +118,12 @@ class PageViewIn(BaseModel):
     path: str = Field(min_length=1, max_length=300)
     module_id: str = Field(default="", max_length=100)
     referrer: str = Field(default="", max_length=300)
+
+
+# ---------- 平台托管存储 ----------
+class ModuleStorageSetIn(BaseModel):
+    # value 可为任意 JSON（对象/数组/标量）；大小与配额在接口内按序列化字节数校验
+    value: Any = None
 
 
 class InstallModuleIn(BaseModel):

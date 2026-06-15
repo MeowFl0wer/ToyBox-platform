@@ -178,6 +178,7 @@ export default function App() {
               module={activeModule}
               palette={palette}
               isLoggedIn={isLoggedIn}
+              user={user}
               onBack={() => setCurrentPage("features")}
               onOpenAuth={() => setAuthOpen(true)}
             />

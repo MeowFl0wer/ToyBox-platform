@@ -74,6 +74,80 @@ def _run(cmd: list[str], cwd: str | None, logs: list[str], timeout: int = 900) -
         raise RuntimeError(f"命令失败({r.returncode})：{' '.join(cmd)}")
 
 
+# ---------- runtime 运行策略（架构：模块分级 static/platform_storage/container/lazy_container）----------
+VALID_RUNTIME_MODES = {"static", "platform_storage", "container", "lazy_container"}
+_BACKEND_MODES = {"container", "lazy_container"}
+
+
+def _mem_to_bytes(s: str) -> int:
+    """解析 256m / 1g / 1024k / 1048576 等内存字符串为字节；非法返回 -1。"""
+    m = re.fullmatch(r"\s*(\d+)\s*([bkmg]?)\s*", str(s).lower())
+    if not m:
+        return -1
+    return int(m.group(1)) * {"": 1, "b": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[m.group(2)]
+
+
+def runtime_mode_for(manifest: dict) -> str:
+    """模块运行模式：显式 runtime.mode 优先；否则按旧契约推断
+    （声明后端→container，否则→static），保证旧模块零改动兼容。"""
+    if not isinstance(manifest, dict):
+        return "static"
+    mode = (manifest.get("runtime") or {}).get("mode")
+    if mode in VALID_RUNTIME_MODES:
+        return mode
+    return "container" if bool((manifest.get("backend") or {}).get("enabled")) else "static"
+
+
+def module_has_backend(manifest: dict) -> bool:
+    """是否需要部署独立后端容器/进程：仅 container / lazy_container 且 backend.enabled。"""
+    return runtime_mode_for(manifest) in _BACKEND_MODES and bool((manifest.get("backend") or {}).get("enabled"))
+
+
+def uses_platform_storage(manifest: dict) -> bool:
+    return runtime_mode_for(manifest) == "platform_storage"
+
+
+def resource_limits_for(manifest: dict) -> dict:
+    """读取 runtime.resources 并按主站上限钳制（缺省用主站默认）。仅容器模式生效。"""
+    res = ((manifest.get("runtime") or {}) if isinstance(manifest, dict) else {}).get("resources") or {}
+    mem = str(res.get("memory") or settings.module_default_memory)
+    if _mem_to_bytes(mem) <= 0 or _mem_to_bytes(mem) > _mem_to_bytes(settings.module_max_memory):
+        mem = settings.module_max_memory if _mem_to_bytes(mem) > _mem_to_bytes(settings.module_max_memory) else settings.module_default_memory
+    try:
+        cpus = min(float(res.get("cpus") or settings.module_default_cpus), settings.module_max_cpus)
+    except (TypeError, ValueError):
+        cpus = settings.module_default_cpus
+    try:
+        pids = min(int(res.get("pids") or settings.module_default_pids), settings.module_max_pids)
+    except (TypeError, ValueError):
+        pids = settings.module_default_pids
+    return {"memory": mem, "cpus": cpus, "pids": pids}
+
+
+def _validate_runtime(m: dict) -> None:
+    rt = m.get("runtime")
+    if rt is None:
+        return
+    if not isinstance(rt, dict):
+        raise ValueError("module.yaml: runtime 必须是对象")
+    mode = rt.get("mode")
+    if mode is not None and mode not in VALID_RUNTIME_MODES:
+        raise ValueError(f"module.yaml: runtime.mode 非法，应为 {sorted(VALID_RUNTIME_MODES)} 之一")
+    res = rt.get("resources")
+    if res is not None:
+        if not isinstance(res, dict):
+            raise ValueError("module.yaml: runtime.resources 必须是对象")
+        if "memory" in res and _mem_to_bytes(res["memory"]) <= 0:
+            raise ValueError("module.yaml: runtime.resources.memory 非法（如 256m / 1g）")
+        if "cpus" in res and not (isinstance(res["cpus"], (int, float)) and not isinstance(res["cpus"], bool) and res["cpus"] > 0):
+            raise ValueError("module.yaml: runtime.resources.cpus 必须是正数")
+        if "pids" in res and not (isinstance(res["pids"], int) and not isinstance(res["pids"], bool) and res["pids"] > 0):
+            raise ValueError("module.yaml: runtime.resources.pids 必须是正整数")
+    it = rt.get("idle_timeout")
+    if it is not None and not (isinstance(it, int) and not isinstance(it, bool) and it > 0):
+        raise ValueError("module.yaml: runtime.idle_timeout 必须是正整数")
+
+
 def _validate_manifest(m: dict) -> str:
     mid = m.get("id")
     if not mid or not ID_RE.match(str(mid)):
@@ -88,13 +162,15 @@ def _validate_manifest(m: dict) -> str:
     if not hp.startswith("/"):
         raise ValueError("health_path 必须以 / 开头")
 
-    # 网关白名单强校验（防类型写错绕过 fail-closed）
+    _validate_runtime(m)  # runtime.mode / resources / idle_timeout 校验
+
+    # 网关白名单强校验（防类型写错绕过 fail-closed）。仅对实际会部署后端的模块要求 allow_paths。
     gw = m.get("gateway") or {}
     if not isinstance(gw, dict):
         raise ValueError("module.yaml: gateway 必须是对象")
     if "legacy_allow_all" in gw and not isinstance(gw["legacy_allow_all"], bool):
         raise ValueError("module.yaml: gateway.legacy_allow_all 必须是布尔值")
-    if bool((m.get("backend") or {}).get("enabled")) and gw.get("legacy_allow_all") is not True:
+    if module_has_backend(m) and gw.get("legacy_allow_all") is not True:
         allow = gw.get("allow_paths")
         if not isinstance(allow, list) or not allow or not all(isinstance(p, str) for p in allow):
             raise ValueError("module.yaml: gateway.allow_paths 必须是非空字符串列表（或显式 legacy_allow_all: true）")
@@ -333,9 +409,18 @@ class DockerRunner:
         env_args = ["-e", f"MODULE_ID={ctx.module_id}", "-e", f"MODULE_SIGN_KEY={module_sign_key_for(ctx.module_id)}"]
         if db_url:
             env_args += ["-e", f"DATABASE_URL={db_url}"]
+        # 资源限制 + 安全加固：限内存/CPU/进程数，丢弃所有 capability、禁止提权，/tmp 用 tmpfs（不可执行）。
+        lim = resource_limits_for(ctx.manifest)
+        limit_args = [
+            "--memory", str(lim["memory"]), "--memory-swap", str(lim["memory"]),
+            "--cpus", str(lim["cpus"]), "--pids-limit", str(lim["pids"]),
+            "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
+            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+        ]
+        ctx.logs.append(f"[runtime] 资源限制 memory={lim['memory']} cpus={lim['cpus']} pids={lim['pids']}")
         # 不暴露公网端口，仅加入内部网络，主站网关按容器名访问
         _run(["docker", "run", "-d", "--name", cont, "--network", settings.docker_network,
-              "--restart", "unless-stopped", *env_args, self._image(ctx)], None, ctx.logs, timeout=120)
+              "--restart", "unless-stopped", *limit_args, *env_args, self._image(ctx)], None, ctx.logs, timeout=120)
         return f"http://{cont}:{self._internal_port(ctx)}"
 
     def ensure_running(self, ctx: DeployCtx) -> str:
@@ -500,8 +585,13 @@ def _do_install(job_id: str) -> None:
             _strip_crossorigin(asset_dir, logs)
 
         # 4) runner 部署后端（建后端/镜像 + 建库迁移 + 起服务）→ 健康检查
+        #    仅 container / lazy_container 模式部署后端；static / platform_storage 纯前端，跳过。
         internal_url = ""
-        if (manifest.get("backend") or {}).get("enabled"):
+        mode = runtime_mode_for(manifest)
+        logs.append(f"[runtime] mode={mode}")
+        if module_has_backend(manifest):
+            if mode == "lazy_container":
+                logs.append("[runtime] lazy_container 暂作常驻容器运行（懒启动为后续阶段）")
             _set(db, job, "building_backend", logs)
             logs.append(f"[runner={RUNNER.name}] 开始部署后端")
             _set(db, job, "starting_container", logs)
@@ -536,7 +626,7 @@ def _do_restart(job_id: str) -> None:
     logs = [f"restart {job.module_id}"]
     try:
         m = db.query(InstalledModule).filter(InstalledModule.module_id == job.module_id).first()
-        if not m or not m.manifest or not (m.manifest.get("backend") or {}).get("enabled"):
+        if not m or not m.manifest or not module_has_backend(m.manifest):
             raise RuntimeError("该模块无后端，无需重启")
         ctx = DeployCtx(module_id=m.module_id, manifest=m.manifest, dest=INSTALLED / m.module_id, logs=logs)
         RUNNER.stop(m.module_id)
@@ -613,7 +703,7 @@ def relaunch_active_modules() -> None:
             .all()
         )
         for m in mods:
-            if not m.manifest or not (m.manifest.get("backend") or {}).get("enabled"):
+            if not m.manifest or not module_has_backend(m.manifest):
                 continue
             if not (INSTALLED / m.module_id / "source" / "backend").exists():
                 continue

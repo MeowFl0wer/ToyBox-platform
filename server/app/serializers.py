@@ -22,6 +22,8 @@ def user_public(u: User) -> dict:
 
 
 def module_public(m: InstalledModule, pref: ModuleUserPreference | None = None) -> dict:
+    from .modules_runtime import runtime_mode_for  # 延迟导入避免循环
+
     return {
         "module_id": m.module_id,
         "name": m.name,
@@ -30,6 +32,7 @@ def module_public(m: InstalledModule, pref: ModuleUserPreference | None = None) 
         "icon": m.icon,
         "auth_required": m.auth_required,
         "status": m.status,            # active | coming_soon
+        "runtime_mode": runtime_mode_for(m.manifest),  # static / platform_storage / container / lazy_container
         "builtin": m.builtin,
         "hidden": m.hidden,
         "sort_order": m.sort_order,

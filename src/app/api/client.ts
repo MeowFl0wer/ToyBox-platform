@@ -24,6 +24,7 @@ export interface ApiModule {
   icon: string;
   auth_required: boolean;
   status: string; // active | coming_soon
+  runtime_mode?: string; // static | platform_storage | container | lazy_container
   builtin: boolean;
   hidden: boolean;
   sort_order: number;
@@ -146,6 +147,15 @@ export const api = {
   // ---- core ----
   getModules: () => request<ApiModule[]>("GET", "/api/core/modules"),
   moduleToken: (id: string) => request<{ token: string; expires_in: number }>("POST", `/api/core/modules/${id}/token`, {}),
+  // 平台托管存储（platform_storage 模块）：宿主用主站登录态代模块前端读写
+  moduleStorageGet: (id: string, key: string) =>
+    request<{ key: string; value: any; updated_at: string }>("GET", `/api/core/modules/${id}/storage/${encodeURIComponent(key)}`),
+  moduleStorageSet: (id: string, key: string, value: unknown) =>
+    request<{ key: string; value: any; updated_at: string }>("PUT", `/api/core/modules/${id}/storage/${encodeURIComponent(key)}`, { value }),
+  moduleStorageDelete: (id: string, key: string) =>
+    request("DELETE", `/api/core/modules/${id}/storage/${encodeURIComponent(key)}`),
+  moduleStorageList: (id: string, prefix = "") =>
+    request<{ key: string; value: any; updated_at: string }[]>("GET", `/api/core/modules/${id}/storage?prefix=${encodeURIComponent(prefix)}`),
   favorite: (id: string) => request<ApiModule>("POST", `/api/core/modules/${id}/favorite`, {}),
   unfavorite: (id: string) => request<ApiModule>("DELETE", `/api/core/modules/${id}/favorite`),
   siteContents: (keys: string) => request<Record<string, any>>("GET", `/api/core/site-contents?keys=${encodeURIComponent(keys)}`),

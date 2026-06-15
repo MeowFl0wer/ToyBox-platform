@@ -70,6 +70,19 @@ class Settings(BaseSettings):
     # 模块来源白名单（GitHub owner 列表，空=不限制）。建议生产只允许自己的账号/组织。
     module_source_allowlist: list[str] = []
 
+    # 平台托管存储（runtime.mode=platform_storage 模块用）配额
+    module_storage_max_keys: int = 100              # 每用户每模块最多 key 数
+    module_storage_max_value_bytes: int = 128 * 1024   # 单个 value 序列化上限 128KB
+    module_storage_max_total_bytes: int = 2 * 1024 * 1024  # 每用户每模块总量上限 2MB
+
+    # 容器模块（runtime.mode=container/lazy_container）默认/上限资源（docker 模式生效）
+    module_default_memory: str = "256m"
+    module_max_memory: str = "1024m"
+    module_default_cpus: float = 0.5
+    module_max_cpus: float = 2.0
+    module_default_pids: int = 128
+    module_max_pids: int = 512
+
     # 初始管理员（首次启动自动创建，请尽快在设置里改密码）
     admin_username: str = "admin"
     admin_email: str = "admin@toybox.local"

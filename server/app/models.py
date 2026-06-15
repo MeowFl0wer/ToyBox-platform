@@ -185,3 +185,20 @@ class AdminAuditLog(Base):
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     ip_address: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class ModuleStorage(Base):
+    """平台托管存储：让纯前端模块（runtime.mode=platform_storage）无需自带后端/数据库，
+    即可按 (用户, 模块, key) 隔离地保存少量 JSON 数据。主站统一鉴权与配额。"""
+
+    __tablename__ = "module_storage"
+    __table_args__ = (UniqueConstraint("user_id", "module_id", "key", name="uq_storage_user_module_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True, nullable=False)
+    module_id: Mapped[str] = mapped_column(String(100), index=True, nullable=False)
+    key: Mapped[str] = mapped_column(String(120), nullable=False)
+    value_json: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # value 序列化字节数（配额统计用）
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)

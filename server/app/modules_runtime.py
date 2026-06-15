@@ -526,6 +526,39 @@ def start_uninstall(module_id: str, created_by: str | None = None) -> str:
     return _enqueue("uninstall", module_id=module_id, created_by=created_by)
 
 
+# 安装任务的「进行中」状态（非 pending/success/failed）。崩溃后会卡在这些状态。
+_INFLIGHT_JOB_STATUSES = (
+    "processing", "cloning", "validating", "building_frontend",
+    "building_backend", "migrating", "starting_container", "health_checking",
+)
+
+
+def reclaim_stale_install_jobs() -> int:
+    """回收因执行进程崩溃而中断、卡在「进行中」状态的安装任务，标记为 failed，避免永久卡死。
+    在执行方（独立 deploy_worker，或 worker_inproc 时的主站）启动时调用：单执行进程模型下，
+    启动那一刻任何处于进行中状态的任务都已随上次进程消亡，可安全判失败。"""
+    db = SessionLocal()
+    try:
+        n = (
+            db.query(InstallJob)
+            .filter(InstallJob.status.in_(_INFLIGHT_JOB_STATUSES))
+            .update(
+                {
+                    "status": "failed",
+                    "error_message": "部署进程重启，上一次任务被中断，请重试",
+                    "finished_at": _now(),
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        if n:
+            log.warning("回收 %d 个中断的安装任务（标记为 failed）", n)
+        return n
+    finally:
+        db.close()
+
+
 def dispatch(job_id: str) -> None:
     """按 job_type 分发执行（被进程内线程或独立 worker 调用）。"""
     db = SessionLocal()

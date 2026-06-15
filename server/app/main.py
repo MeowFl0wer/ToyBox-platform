@@ -114,6 +114,10 @@ def _check_production_config() -> None:
 def _startup():
     _check_production_config()
     run_seed()
+    # 仅当主站自身就是任务执行方（worker_inproc，开发态）时，回收上次崩溃中断的安装任务；
+    # 生产 worker_inproc=false 时任务由独立 deploy_worker 执行/回收，主站不得越权改其在跑的任务。
+    if settings.worker_inproc:
+        modules_runtime.reclaim_stale_install_jobs()
     # 后台重新拉起已安装的 active 模块（建 venv/健康检查较慢，放线程不阻塞启动）
     threading.Thread(target=modules_runtime.relaunch_active_modules, daemon=True).start()
     log.info("%s 已启动", settings.app_name)

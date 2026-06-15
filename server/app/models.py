@@ -140,6 +140,7 @@ class InstallJob(Base):
     error_message: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_by: Mapped[str | None] = mapped_column(String(36), ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)  # 心跳：每次状态/日志更新
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 

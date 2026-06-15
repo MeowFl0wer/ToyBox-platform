@@ -11,7 +11,7 @@ import time
 
 from ..core.database import SessionLocal
 from ..models import InstallJob
-from ..modules_runtime import dispatch
+from ..modules_runtime import dispatch, reclaim_stale_install_jobs
 from ..seed import run_seed
 
 log = logging.getLogger("toybox.worker")
@@ -28,6 +28,8 @@ def run_worker_loop(poll: float = 2.0) -> None:
         except Exception as e:  # noqa: BLE001
             log.warning("等待数据库就绪：%s", e)
             time.sleep(2)
+    # 回收上一次 worker 崩溃时中断的任务（卡在进行中状态的标为 failed），避免永久卡住
+    reclaim_stale_install_jobs()
     log.info("Deploy Worker 已启动，轮询间隔 %.1fs", poll)
 
     while True:

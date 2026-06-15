@@ -26,6 +26,9 @@ _COLUMN_MIGRATIONS = {
         "totp_recovery": "TEXT NOT NULL DEFAULT ''",
         "token_version": "INTEGER NOT NULL DEFAULT 0",
     },
+    "module_install_jobs": {
+        "updated_at": "DATETIME",  # 心跳列，用于回收崩溃中断的安装任务
+    },
 }
 
 

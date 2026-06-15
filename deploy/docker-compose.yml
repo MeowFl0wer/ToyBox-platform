@@ -31,11 +31,14 @@ services:
       IMAGES: 1
       NETWORKS: 1
       INFO: 1
-      POST: 1          # 允许创建/构建/启动（构建镜像 /build、运行容器 /containers/create）
+      POST: 1          # 允许创建/启动（/containers/create 等）
+      BUILD: 1         # 允许 /build：构建模块镜像（socket-proxy 默认拒绝 BUILD，不开会 403）
       EXEC: 0          # 禁用 exec
       SECRETS: 0
       SWARM: 0
       SYSTEM: 0
+      # 注：若按架构 phase 4 改为「GitHub Actions 构建镜像、服务器只 pull+run」，可去掉 BUILD: 1，
+      # 进一步收敛权限（更推荐：资源与 Docker 权限都更稳）。
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks: [deploy_net]      # 仅在部署专网，模块/业务容器无法访问到它
@@ -70,6 +73,9 @@ services:
       TOYBOX_DEPLOY_MODE: docker
       TOYBOX_DOCKER_NETWORK: toybox_net
       DOCKER_HOST: tcp://toybox-socket-proxy:2375     # 经代理访问受限 Docker API
+      # 强制用旧版构建器：docker build 走 POST /build（socket-proxy 的 BUILD 可放行）；
+      # BuildKit 改用 /session+/grpc 端点，socket-proxy 不暴露，会导致经代理构建失败。
+      DOCKER_BUILDKIT: "0"
       TOYBOX_POSTGRES_HOST: toybox-postgres           # 建模块库用（psycopg 直连）
       TOYBOX_POSTGRES_SUPERUSER: postgres
       TOYBOX_POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}

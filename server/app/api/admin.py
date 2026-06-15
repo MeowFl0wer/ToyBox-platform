@@ -206,6 +206,7 @@ def install_job(job_id: str, db: Session = Depends(get_db), admin: User = Depend
         "logs": job.logs,
         "error_message": job.error_message,
         "created_at": job.created_at.isoformat() if job.created_at else None,
+        "updated_at": job.updated_at.isoformat() if job.updated_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
     })
 

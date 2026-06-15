@@ -591,6 +591,13 @@ def _do_install(job_id: str) -> None:
         return
     logs: list[str] = []
     try:
+        # 0) 预检：docker 模式必须有可用的 docker CLI（否则给出明确指引，而非中途 [Errno 2] docker）
+        if RUNNER.name == "docker" and shutil.which("docker") is None:
+            raise RuntimeError(
+                "docker CLI 不可用：部署镜像未安装 Docker 客户端。"
+                "请用最新 deploy/backend.Dockerfile 重新构建（docker compose up -d --build），"
+                "deploy_worker 会通过 DOCKER_HOST 连接 socket-proxy。"
+            )
         # 1) clone
         _set(db, job, "cloning", logs)
         staging = STAGING / job_id

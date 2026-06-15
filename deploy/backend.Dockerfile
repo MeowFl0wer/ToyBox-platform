@@ -5,12 +5,25 @@
 # 详见 deploy/docker-compose.yml。
 FROM python:3.12-slim
 
-# 系统依赖：git、docker CLI、node 20
+# 系统依赖：git、node 20（docker CLI 单独按官方静态二进制安装，见下）
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates curl gnupg docker.io \
+    && apt-get install -y --no-install-recommends git ca-certificates curl gnupg tar \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Docker CLI：用官方静态二进制（仅客户端，不含 daemon），跨 amd64/arm64 可靠，避免 Debian
+# docker.io 包在某些环境（如 ARM64）装不出可用的 docker 命令。装完即 `docker --version` 自检，
+# 装不上就让镜像构建失败（绝不让「运行时才报 docker 找不到」的镜像上线）。
+# 运行时通过 DOCKER_HOST=tcp://toybox-socket-proxy:2375 连接受限 Docker API，本镜像不跑 daemon。
+ARG DOCKER_CLI_VERSION=27.3.1
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    curl -fsSL "https://download.docker.com/linux/static/stable/${arch}/docker-${DOCKER_CLI_VERSION}.tgz" -o /tmp/docker.tgz; \
+    tar -xzf /tmp/docker.tgz -C /tmp docker/docker; \
+    install -m 0755 /tmp/docker/docker /usr/local/bin/docker; \
+    rm -rf /tmp/docker /tmp/docker.tgz; \
+    docker --version
 
 WORKDIR /app
 

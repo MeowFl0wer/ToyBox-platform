@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     # 平台托管存储（runtime.mode=platform_storage 模块用）配额
     module_storage_max_keys: int = 100              # 每用户每模块最多 key 数
     module_storage_max_value_bytes: int = 128 * 1024   # 单个 value 序列化上限 128KB
-    module_storage_max_total_bytes: int = 2 * 1024 * 1024  # 每用户每模块总量上限 2MB
+    module_storage_max_total_bytes: int = 6 * 1024 * 1024  # 每用户每模块总量上限 6MB
 
     # 容器模块（runtime.mode=container/lazy_container）默认/上限资源（docker 模式生效）
     module_default_memory: str = "256m"
@@ -82,6 +82,12 @@ class Settings(BaseSettings):
     module_max_cpus: float = 2.0
     module_default_pids: int = 128
     module_max_pids: int = 512
+    # 安装期 docker build / 迁移容器的资源上限（防构建吃满 A1 等小机器；build 比运行更吃内存）
+    module_build_memory: str = "1536m"
+    module_build_cpus: float = 1.0
+
+    # 平台托管存储写入限流（每用户每模块每分钟最多写入次数，缓解并发刷配额）
+    module_storage_write_per_min: int = 60
 
     # 初始管理员（首次启动自动创建，请尽快在设置里改密码）
     admin_username: str = "admin"

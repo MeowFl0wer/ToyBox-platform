@@ -1,13 +1,15 @@
 """主站公开接口：工具大厅模块列表、收藏、欢迎模块、站点内容渲染。"""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from ..core import ratelimit
@@ -21,6 +23,7 @@ from ..core.response import (
     CODE_MODULE_DISABLED,
     CODE_MODULE_NOT_FOUND,
     CODE_NOT_FOUND,
+    CODE_RATE_LIMITED,
     ok,
 )
 from ..core.security import clean_text, create_module_token
@@ -128,6 +131,31 @@ def _storage_out(row: ModuleStorage) -> dict:
     return {"key": row.key, "value": row.value_json, "updated_at": row.updated_at.isoformat() if row.updated_at else None}
 
 
+# 配额是「先查后写」，并发可能各自读到旧值而绕过上限。用按 (用户,模块) 哈希的条带进程锁
+# 串行化同一用户同一模块的配额检查+写入（单实例足够）；Postgres 下再叠加事务级 advisory lock，
+# 即使横向扩多个 backend 实例也能串行化。
+_STORAGE_LOCK_STRIPES = [threading.Lock() for _ in range(64)]
+
+
+def _storage_lock(user_id: str, module_id: str) -> threading.Lock:
+    h = int(hashlib.sha256(f"{user_id}:{module_id}".encode("utf-8")).hexdigest(), 16)
+    return _STORAGE_LOCK_STRIPES[h % len(_STORAGE_LOCK_STRIPES)]
+
+
+def _pg_advisory_lock(db: Session, user_id: str, module_id: str) -> None:
+    """Postgres：在当前事务上取 advisory lock（事务结束自动释放），跨实例串行化同键写入。
+    非 Postgres（开发态 SQLite，单实例）跳过——进程内条带锁已足够。"""
+    try:
+        if db.get_bind().dialect.name != "postgresql":
+            return
+    except Exception:  # noqa: BLE001
+        return
+    digest = hashlib.sha256(f"{user_id}:{module_id}".encode("utf-8")).digest()
+    k1 = int.from_bytes(digest[:4], "big", signed=True)
+    k2 = int.from_bytes(digest[4:8], "big", signed=True)
+    db.execute(text("SELECT pg_advisory_xact_lock(:k1, :k2)"), {"k1": k1, "k2": k2})
+
+
 @router.get("/modules/{module_id}/storage")
 def storage_list(module_id: str, prefix: str = Query(default=""), limit: int = Query(default=100, ge=1, le=500),
                  db: Session = Depends(get_db), user: User = Depends(get_current_user)):
@@ -158,6 +186,9 @@ def storage_set(module_id: str, key: str, body: ModuleStorageSetIn,
                 db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     _storage_module(db, module_id)
     _check_key(key)
+    # 写入限流（每用户每模块），缓解并发刷配额 / 滥用
+    if not ratelimit.allow(f"storage:w:{user.id}:{module_id}", settings.module_storage_write_per_min, 60):
+        raise APIError(CODE_RATE_LIMITED, "存储写入过于频繁，请稍后再试")
     # 体积校验：按紧凑 JSON 字节数计
     try:
         size = len(json.dumps(body.value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
@@ -166,34 +197,37 @@ def storage_set(module_id: str, key: str, body: ModuleStorageSetIn,
     if size > settings.module_storage_max_value_bytes:
         raise APIError(CODE_BAD_PARAM, f"value 过大（上限 {settings.module_storage_max_value_bytes // 1024}KB）")
 
-    row = (
-        db.query(ModuleStorage)
-        .filter(ModuleStorage.user_id == user.id, ModuleStorage.module_id == module_id, ModuleStorage.key == key)
-        .first()
-    )
-    # 配额：key 数 + 总字节数（更新已有 key 不增计数；总量按「替换后」计算）
-    used = db.query(func.coalesce(func.sum(ModuleStorage.size_bytes), 0)).filter(
-        ModuleStorage.user_id == user.id, ModuleStorage.module_id == module_id
-    ).scalar() or 0
-    if not row:
-        count = db.query(func.count(ModuleStorage.id)).filter(
+    # 串行化「查配额 → 写入」：进程内条带锁 + Postgres 事务级 advisory lock，防并发绕过上限
+    with _storage_lock(user.id, module_id):
+        _pg_advisory_lock(db, user.id, module_id)
+        row = (
+            db.query(ModuleStorage)
+            .filter(ModuleStorage.user_id == user.id, ModuleStorage.module_id == module_id, ModuleStorage.key == key)
+            .first()
+        )
+        # 配额：key 数 + 总字节数（更新已有 key 不增计数；总量按「替换后」计算）
+        used = db.query(func.coalesce(func.sum(ModuleStorage.size_bytes), 0)).filter(
             ModuleStorage.user_id == user.id, ModuleStorage.module_id == module_id
         ).scalar() or 0
-        if count >= settings.module_storage_max_keys:
-            raise APIError(CODE_CONFLICT, f"key 数量已达上限（{settings.module_storage_max_keys}）")
-        projected = used + size
-    else:
-        projected = used - (row.size_bytes or 0) + size
-    if projected > settings.module_storage_max_total_bytes:
-        raise APIError(CODE_CONFLICT, f"存储总量超限（上限 {settings.module_storage_max_total_bytes // 1024 // 1024}MB）")
+        if not row:
+            count = db.query(func.count(ModuleStorage.id)).filter(
+                ModuleStorage.user_id == user.id, ModuleStorage.module_id == module_id
+            ).scalar() or 0
+            if count >= settings.module_storage_max_keys:
+                raise APIError(CODE_CONFLICT, f"key 数量已达上限（{settings.module_storage_max_keys}）")
+            projected = used + size
+        else:
+            projected = used - (row.size_bytes or 0) + size
+        if projected > settings.module_storage_max_total_bytes:
+            raise APIError(CODE_CONFLICT, f"存储总量超限（上限 {settings.module_storage_max_total_bytes // 1024 // 1024}MB）")
 
-    if not row:
-        row = ModuleStorage(user_id=user.id, module_id=module_id, key=key)
-        db.add(row)
-    row.value_json = body.value
-    row.size_bytes = size
-    db.commit()
-    db.refresh(row)
+        if not row:
+            row = ModuleStorage(user_id=user.id, module_id=module_id, key=key)
+            db.add(row)
+        row.value_json = body.value
+        row.size_bytes = size
+        db.commit()
+        db.refresh(row)
     return ok(_storage_out(row), message="已保存")
 
 

@@ -147,6 +147,14 @@ def _validate_runtime(m: dict) -> None:
     if it is not None and not (isinstance(it, int) and not isinstance(it, bool) and it > 0):
         raise ValueError("module.yaml: runtime.idle_timeout 必须是正整数")
 
+    # 显式声明 runtime.mode 时，必须与 backend.enabled 一致，避免「声明成后端模块但部署器不起后端」之类的矛盾。
+    if mode in VALID_RUNTIME_MODES:
+        be = bool((m.get("backend") or {}).get("enabled"))
+        if mode in _BACKEND_MODES and not be:
+            raise ValueError(f"module.yaml: runtime.mode={mode} 必须同时 backend.enabled: true")
+        if mode not in _BACKEND_MODES and be:
+            raise ValueError(f"module.yaml: runtime.mode={mode}（纯前端）不能声明 backend.enabled: true")
+
 
 def _validate_manifest(m: dict) -> str:
     mid = m.get("id")
@@ -389,12 +397,24 @@ class DockerRunner:
     def _build_image(self, ctx: DeployCtx) -> None:
         df = str((ctx.manifest.get("backend") or {}).get("dockerfile", "backend/Dockerfile"))
         build_ctx = (ctx.src / df).parent
-        _run(["docker", "build", "-t", self._image(ctx), "-f", str(ctx.src / df), str(build_ctx)], None, ctx.logs, timeout=1800)
+        # 给 docker build 加内存/CPU 上限，避免在小机器（如 A1）上构建吃满资源（best-effort：
+        # BuildKit 可能忽略部分参数，彻底隔离请按文档 phase 4 把镜像构建移到 GitHub Actions）。
+        build_lim = [
+            "--memory", str(settings.module_build_memory),
+            "--cpu-period", "100000", "--cpu-quota", str(int(settings.module_build_cpus * 100000)),
+        ]
+        _run(["docker", "build", *build_lim, "-t", self._image(ctx), "-f", str(ctx.src / df), str(build_ctx)],
+             None, ctx.logs, timeout=1800)
 
     def _migrate(self, ctx: DeployCtx, db_url: str) -> None:
         if not (ctx.backend_dir / "alembic").exists():
             return
+        # 迁移容器同样限制资源 + 安全加固（与运行容器一致）
+        lim = resource_limits_for(ctx.manifest)
         _run(["docker", "run", "--rm", "--network", settings.docker_network,
+              "--memory", str(lim["memory"]), "--memory-swap", str(lim["memory"]),
+              "--cpus", str(lim["cpus"]), "--pids-limit", str(lim["pids"]),
+              "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
               "-e", f"DATABASE_URL={db_url}", "-e", f"MODULE_ID={ctx.module_id}",
               "-e", f"MODULE_SIGN_KEY={module_sign_key_for(ctx.module_id)}",
               self._image(ctx), "alembic", "upgrade", "head"], None, ctx.logs, timeout=600)

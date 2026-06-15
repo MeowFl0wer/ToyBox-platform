@@ -99,11 +99,17 @@ def _check_production_config() -> None:
     if settings.dev_mode:
         return
     problems = []
-    if settings.admin_password == "Admin@12345":
-        problems.append("默认管理员密码")
+    pw = settings.admin_password
+    if pw == "Admin@12345" or "change-this" in pw or "change-me" in pw:
+        problems.append("默认/占位的管理员密码（TOYBOX_ADMIN_PASSWORD）")
+    elif len(pw) < 12:
+        problems.append("管理员密码过短（TOYBOX_ADMIN_PASSWORD 至少 12 位）")
     for value, name in ((settings.secret_key, "SECRET_KEY"), (settings.module_sign_key, "MODULE_SIGN_KEY")):
         if "change-me" in value or "change-this" in value:
             problems.append(f"占位的 {name}")
+    # POSTGRES_PASSWORD 经 compose 注入到 db_url；占位值也拦下（库虽只在内网，但凭证不应留默认）
+    if "change-this" in settings.db_url or "change-me" in settings.db_url:
+        problems.append("占位的数据库密码（POSTGRES_PASSWORD）")
     if problems:
         raise RuntimeError(
             "生产模式检测到不安全的默认配置：" + "、".join(problems) + "。请通过环境变量设置强随机值后再启动。"

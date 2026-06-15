@@ -138,8 +138,12 @@ export default function App() {
             style={{ background: "none", border: "none", cursor: "pointer", color: palette.primaryDark, fontSize: "13px", fontWeight: 700, fontFamily: "'Nunito', sans-serif" }}
           >
             {isLoggedIn ? (
-              <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold" style={{ background: palette.activeGradient }}>
-                {displayInitial}
+              <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold overflow-hidden" style={{ background: palette.activeGradient }}>
+                {user?.avatar_url ? (
+                  <img src={user.avatar_url} alt="" className="w-full h-full object-cover" />
+                ) : (
+                  displayInitial
+                )}
               </div>
             ) : "登录"}
           </button>

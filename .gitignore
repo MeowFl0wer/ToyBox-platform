@@ -28,4 +28,8 @@ server/data/
 __pycache__/
 *.pyc
 
+# 个人部署/维护备忘录（可能含服务器 IP、路径等，不入库不上传）
+*部署维护备忘录*.md
+*部署维护备忘录*.txt
+
 # 注意：.backup-before-animation/ 为有意保留的源码快照，不忽略

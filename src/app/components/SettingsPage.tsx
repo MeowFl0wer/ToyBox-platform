@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Mail, Lock, User, FileText, Moon, Sun, LogOut, ChevronRight, Shield, Camera } from "lucide-react";
 import type { ThemePalette } from "../theme";
 import { Reveal, fireConfetti } from "./anim";
+import { useCountdown } from "../useCountdown";
 import { DoodleLayer } from "./DoodleLayer";
 import { ABOUT_DOODLES, AboutBlobs } from "./AboutPage";
 import { api, ApiError, type ApiUser } from "../api/client";
@@ -392,15 +393,16 @@ function DevHint({ code }: { code: string }) {
   );
 }
 
-function SendCodeBtn({ onClick, busy, palette }: { onClick: () => void; busy: boolean; palette: ThemePalette }) {
+function SendCodeBtn({ onClick, busy, palette, cooldown = 0 }: { onClick: () => void; busy: boolean; palette: ThemePalette; cooldown?: number }) {
+  const disabled = busy || cooldown > 0;
   return (
     <button
       onClick={onClick}
-      disabled={busy}
+      disabled={disabled}
       className="rounded-xl px-3 transition-all active:scale-95 flex-shrink-0"
-      style={{ background: palette.soft, color: palette.primaryDark, border: `1.5px solid ${palette.border}`, fontSize: "13px", fontWeight: 800, cursor: busy ? "not-allowed" : "pointer", fontFamily: "'Nunito', sans-serif", whiteSpace: "nowrap" }}
+      style={{ background: palette.soft, color: palette.primaryDark, border: `1.5px solid ${palette.border}`, fontSize: "13px", fontWeight: 800, cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.6 : 1, fontFamily: "'Nunito', sans-serif", whiteSpace: "nowrap" }}
     >
-      {busy ? "…" : "发送验证码"}
+      {busy ? "…" : cooldown > 0 ? `${cooldown}s 后重发` : "发送验证码"}
     </button>
   );
 }
@@ -414,6 +416,7 @@ function PasswordChangeForm({ onDone, palette }: { onDone: () => void; palette: 
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
+  const { left: cd, start: startCd } = useCountdown();
 
   const sendCode = async () => {
     setMsg("");
@@ -422,6 +425,7 @@ function PasswordChangeForm({ onDone, palette }: { onDone: () => void; palette: 
       const d: any = await api.passwordSendCode();
       if (d?.dev_code) { setDevCode(d.dev_code); setCode(d.dev_code); }
       setMsg("✓ 验证码已发送到你的邮箱");
+      startCd(60);  // 60 秒后才能重发（与后端频控一致）
     } catch (e) {
       setMsg(e instanceof ApiError ? e.message : "发送失败");
     } finally {
@@ -453,7 +457,7 @@ function PasswordChangeForm({ onDone, palette }: { onDone: () => void; palette: 
       <StyledInput palette={palette} placeholder="确认新密码" type="password" value={confirmPwd} onChange={setConfirmPwd} />
       <div className="flex gap-2">
         <StyledInput palette={palette} placeholder="邮箱验证码" type="text" value={code} onChange={(v) => setCode(v.replace(/\D/g, "").slice(0, 6))} />
-        <SendCodeBtn palette={palette} onClick={sendCode} busy={sending} />
+        <SendCodeBtn palette={palette} onClick={sendCode} busy={sending} cooldown={cd} />
       </div>
       <DevHint code={devCode} />
       <Msg text={msg} />
@@ -471,6 +475,7 @@ function EmailChangeForm({ currentEmail, onDone, palette }: { currentEmail: stri
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [sending, setSending] = useState(false);
+  const { left: cd, start: startCd } = useCountdown();
 
   const sendCode = async () => {
     setMsg("");
@@ -480,6 +485,7 @@ function EmailChangeForm({ currentEmail, onDone, palette }: { currentEmail: stri
       const d: any = await api.emailSendCode(newEmail.trim());
       if (d?.dev_code) { setDevCode(d.dev_code); setCode(d.dev_code); }
       setMsg("✓ 验证码已发送到新邮箱");
+      startCd(60);  // 60 秒后才能重发（与后端频控一致）
     } catch (e) {
       setMsg(e instanceof ApiError ? e.message : "发送失败");
     } finally {
@@ -512,7 +518,7 @@ function EmailChangeForm({ currentEmail, onDone, palette }: { currentEmail: stri
       <StyledInput palette={palette} placeholder="新邮箱地址" type="email" value={newEmail} onChange={setNewEmail} />
       <div className="flex gap-2">
         <StyledInput palette={palette} placeholder="新邮箱验证码" type="text" value={code} onChange={(v) => setCode(v.replace(/\D/g, "").slice(0, 6))} />
-        <SendCodeBtn palette={palette} onClick={sendCode} busy={sending} />
+        <SendCodeBtn palette={palette} onClick={sendCode} busy={sending} cooldown={cd} />
       </div>
       <DevHint code={devCode} />
       <StyledInput palette={palette} placeholder="当前登录密码" type="password" value={pwd} onChange={setPwd} />

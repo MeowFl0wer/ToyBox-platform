@@ -3,6 +3,7 @@ import { X, Mail, Lock, User, AtSign, Eye, EyeOff, ArrowLeft, Zap, ShieldCheck, 
 import type { ThemePalette } from "../theme";
 import { api, ApiError } from "../api/client";
 import { useAuth } from "../api/auth";
+import { useCountdown } from "../useCountdown";
 
 type AuthView = "login" | "register" | "verify-code" | "forgot" | "reset" | "totp-enroll" | "totp-verify" | "totp-recovery";
 
@@ -38,6 +39,7 @@ export function AuthModal({ open, onClose, onAuthed, palette }: AuthModalProps) 
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]); // 绑定成功后一次性展示
   const [recoveryMode, setRecoveryMode] = useState(false);      // 验证页：改用恢复码登录
   const [recoveryInput, setRecoveryInput] = useState("");
+  const { left: cd, start: startCd } = useCountdown();           // 验证码重发 60 秒冷却
 
   if (!open) return null;
 
@@ -123,6 +125,7 @@ export function AuthModal({ open, onClose, onAuthed, palette }: AuthModalProps) 
         setLoginCode(d.dev_code);
       }
       setNotice("验证码已发送到该账号邮箱");
+      startCd(60);
     });
 
   const doSendCode = () =>
@@ -137,6 +140,7 @@ export function AuthModal({ open, onClose, onAuthed, palette }: AuthModalProps) 
         setCode(data.dev_code); // 开发模式自动填入，便于测试
       }
       setView("verify-code");
+      startCd(60);
     });
 
   const doRegister = () =>
@@ -157,6 +161,7 @@ export function AuthModal({ open, onClose, onAuthed, palette }: AuthModalProps) 
       }
       setPassword("");
       setView("reset");
+      startCd(60);
     });
 
   const doReset = () =>
@@ -312,11 +317,11 @@ export function AuthModal({ open, onClose, onAuthed, palette }: AuthModalProps) 
                     />
                     <button
                       onClick={sendLoginCode}
-                      disabled={busy}
+                      disabled={busy || cd > 0}
                       className="rounded-xl px-3 flex-shrink-0"
-                      style={{ background: palette.soft, color: palette.primaryDark, border: `1.5px solid ${palette.border}`, fontSize: "13px", fontWeight: 800, cursor: busy ? "not-allowed" : "pointer", fontFamily: "'Nunito', sans-serif", whiteSpace: "nowrap" }}
+                      style={{ background: palette.soft, color: palette.primaryDark, border: `1.5px solid ${palette.border}`, fontSize: "13px", fontWeight: 800, cursor: busy || cd > 0 ? "not-allowed" : "pointer", opacity: cd > 0 ? 0.6 : 1, fontFamily: "'Nunito', sans-serif", whiteSpace: "nowrap" }}
                     >
-                      发送验证码
+                      {cd > 0 ? `${cd}s 后重发` : "发送验证码"}
                     </button>
                   </div>
                 </>
@@ -382,8 +387,8 @@ export function AuthModal({ open, onClose, onAuthed, palette }: AuthModalProps) 
               <PrimaryButton palette={palette} onClick={doRegister} busy={busy}>验证并完成注册</PrimaryButton>
               <div className="text-center" style={{ fontSize: "12px", color: palette.muted }}>
                 没收到？{" "}
-                <button onClick={doSendCode} disabled={busy} style={linkStyle}>
-                  重新发送
+                <button onClick={doSendCode} disabled={busy || cd > 0} style={{ ...linkStyle, opacity: cd > 0 ? 0.6 : 1, cursor: cd > 0 ? "not-allowed" : "pointer" }}>
+                  {cd > 0 ? `重新发送（${cd}s）` : "重新发送"}
                 </button>
               </div>
             </>

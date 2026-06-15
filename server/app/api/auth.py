@@ -122,6 +122,15 @@ def _dev(data: dict, code: str) -> dict:
     return data
 
 
+def _rate_email_send(target: str) -> None:
+    """统一的验证码发信频控（按目标维度）：同一目标 60 秒最多 1 次、1 小时最多 4 次。
+    target 已按用途加前缀（注册/登录/找回/改邮箱/改密码各自独立计数）。"""
+    if not ratelimit.allow(f"mailsend:cd:{target}", 1, 60):
+        raise APIError(CODE_RATE_LIMITED, "验证码发送过于频繁，请 60 秒后再试")
+    if not ratelimit.allow(f"mailsend:hr:{target}", 4, 3600):
+        raise APIError(CODE_RATE_LIMITED, "验证码发送次数过多，1 小时内最多 4 次，请稍后再试")
+
+
 # ---------- 会话 / token ----------
 def _allocate_uid(db: Session) -> int:
     seq = db.get(Sequence, "user_uid")
@@ -286,8 +295,7 @@ def register_send_code(body: SendCodeIn, request: Request, db: Session = Depends
     email = body.email.lower()
     if not ratelimit.allow(f"sendcode:ip:{ip}", 8, 3600):
         raise APIError(CODE_RATE_LIMITED, "操作过于频繁，请稍后再试")
-    if not ratelimit.allow(f"sendcode:email:{email}", 1, 60):
-        raise APIError(CODE_RATE_LIMITED, "验证码发送过于频繁，请 1 分钟后再试")
+    _rate_email_send(f"register:{email}")  # 60 秒冷却 + 每小时 4 次
     if db.query(User).filter(User.email == email).first():
         raise APIError(CODE_CONFLICT, "该邮箱已注册")
     code = _create_code(db, email, "register")
@@ -370,8 +378,9 @@ def login_send_code(body: LoginSendCodeIn, request: Request, db: Session = Depen
     """登录失败过多触发步进验证时，把验证码发到该账号邮箱。防枚举：不暴露账号是否存在。"""
     ip = get_client_ip(request)
     account = body.account.strip()
-    if not ratelimit.allow(f"loginsendcode:ip:{ip}", 10, 3600) or not ratelimit.allow(f"loginsendcode:{account.lower()}", 1, 60):
+    if not ratelimit.allow(f"loginsendcode:ip:{ip}", 10, 3600):
         raise APIError(CODE_RATE_LIMITED, "操作过于频繁，请稍后再试")
+    _rate_email_send(f"login:{account.lower()}")  # 60 秒冷却 + 每小时 4 次
     user = db.query(User).filter(or_(User.username == account, User.email == account.lower())).first()
     data: dict = {"sent": True, "expires_in_min": settings.verify_code_ttl_min}
     if user and user.status == "active":
@@ -492,8 +501,9 @@ async def upload_avatar(file: UploadFile = File(...), user: User = Depends(get_c
 def forgot_password(body: ForgotPasswordIn, request: Request, db: Session = Depends(get_db)):
     ip = get_client_ip(request)
     email = body.email.lower()
-    if not ratelimit.allow(f"forgot:ip:{ip}", 8, 3600) or not ratelimit.allow(f"forgot:email:{email}", 1, 60):
+    if not ratelimit.allow(f"forgot:ip:{ip}", 8, 3600):
         raise APIError(CODE_RATE_LIMITED, "操作过于频繁，请稍后再试")
+    _rate_email_send(f"forgot:{email}")  # 60 秒冷却 + 每小时 4 次
     user = db.query(User).filter(User.email == email).first()
     data: dict = {"sent": True, "expires_in_min": settings.verify_code_ttl_min}
     # 防枚举：无论邮箱是否存在都返回成功；仅存在且可用时才真正发码
@@ -523,8 +533,7 @@ def reset_password(body: ResetPasswordIn, request: Request, db: Session = Depend
 @router.post("/email/send-code")
 def email_send_code(body: EmailSendCodeIn, request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     new_email = body.new_email.lower()
-    if not ratelimit.allow(f"changeemail:user:{user.id}", 5, 3600):
-        raise APIError(CODE_RATE_LIMITED, "操作过于频繁，请稍后再试")
+    _rate_email_send(f"chgemail:{user.id}")  # 60 秒冷却 + 每小时 4 次
     if new_email == user.email:
         raise APIError(CODE_BAD_PARAM, "新邮箱与当前邮箱相同")
     if db.query(User).filter(User.email == new_email).first():
@@ -550,8 +559,7 @@ def change_email(body: ChangeEmailIn, user: User = Depends(get_current_user), db
 # ============ 修改密码（已登录，旧密码 + 邮箱验证码）============
 @router.post("/password/send-code")
 def password_send_code(request: Request, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not ratelimit.allow(f"changepwd:user:{user.id}", 5, 3600):
-        raise APIError(CODE_RATE_LIMITED, "操作过于频繁，请稍后再试")
+    _rate_email_send(f"chgpwd:{user.id}")  # 60 秒冷却 + 每小时 4 次
     code = _create_code(db, user.email, "change_password")
     return ok(_dev({"sent": True, "expires_in_min": settings.verify_code_ttl_min}, code), message="验证码已发送至你的邮箱")
 

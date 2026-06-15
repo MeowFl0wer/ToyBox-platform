@@ -9,19 +9,21 @@ from __future__ import annotations
 import logging
 import time
 
-from ..core.database import Base, SessionLocal, engine
+from ..core.database import SessionLocal
 from ..models import InstallJob
 from ..modules_runtime import dispatch
+from ..seed import run_seed
 
 log = logging.getLogger("toybox.worker")
 
 
 def run_worker_loop(poll: float = 2.0) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    # 等待并确保表存在（与主站共享库）
+    # 等待数据库就绪，并执行「建表 + 轻量迁移 + 基础数据」（run_seed 幂等，与主站后端一致）：
+    # worker 可能比 backend 先处理任务，这里跑迁移可避免旧库升级时缺列。
     for _ in range(30):
         try:
-            Base.metadata.create_all(bind=engine)
+            run_seed()
             break
         except Exception as e:  # noqa: BLE001
             log.warning("等待数据库就绪：%s", e)

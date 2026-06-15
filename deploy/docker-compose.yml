@@ -84,9 +84,11 @@ services:
       dockerfile: deploy/web.Dockerfile
     container_name: toybox-web
     restart: unless-stopped
-    # ⚠️ 生产必须 HTTPS：dev_mode=false 时刷新 Cookie 为 Secure，仅 HTTP(80) 会导致登录态无法保持。
-    #    请「启用下方 443 + 证书（见 nginx.conf 模板）」或「置于已终止 TLS 的外层反代之后」，
-    #    不要把当前仅 80 的配置直接作为公网入口。
+    # ⚠️ 上线前置（部署动作，必须人工确认）：
+    #    1) 启用 HTTPS：dev_mode=false 时刷新 Cookie 为 Secure，仅 HTTP(80) 会导致登录态无法保持。
+    #       请「启用下方 443 + 证书（见 nginx.conf 模板）」或「置于已终止 TLS 的外层反代之后」，
+    #       不要把当前仅 80 的配置直接作为公网入口。
+    #    2) 启用主站 CSP：nginx.conf 里的 Content-Security-Policy 默认注释，浏览器自测无误后再开启。
     ports:
       - "80:80"
       # - "443:443"   # 配置 TLS 后启用（并在 nginx.conf 启用 443 server 块与 80→443 跳转）

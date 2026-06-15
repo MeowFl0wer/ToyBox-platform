@@ -1,5 +1,8 @@
-# 主站后端镜像。docker 部署模式下，安装模块需要：git（clone）、node/npm（构建模块前端）、
-# docker CLI（构建/运行模块容器，配合挂载的 docker.sock）。
+# 主站后端 + Deploy Worker 共用镜像。docker 部署模式下，安装模块需要：git（clone）、
+# node/npm（构建模块前端）、docker CLI（构建/运行模块容器）。
+# 注意：backend 容器本身**不**挂载 docker.sock；只有 deploy_worker（用本镜像）通过 docker CLI
+# 经 socket-proxy（DOCKER_HOST=tcp://toybox-socket-proxy:2375）访问受限 Docker API。
+# 详见 deploy/docker-compose.yml。
 FROM python:3.12-slim
 
 # 系统依赖：git、docker CLI、node 20

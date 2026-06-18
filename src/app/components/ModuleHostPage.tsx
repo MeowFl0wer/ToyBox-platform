@@ -183,6 +183,23 @@ function ModuleFrame({ module, palette, user }: { module: ApiModule; palette: Th
         return;
       }
 
+      // ---- 用户搜索（供模块「定向分享」选人；宿主用当前登录态代调主站只读接口）----
+      if (msg.type === "user_search") {
+        const reply = (body: unknown) =>
+          win.postMessage({ source: "pt-host", type: "user_search_result", reqId: msg.reqId, body }, "*");
+        if (!user) {
+          reply({ code: 10001, message: "未登录", data: [] });
+          return;
+        }
+        try {
+          const hits = await api.userSearch(String(msg.q ?? ""));
+          reply({ code: 0, message: "ok", data: hits });
+        } catch (e) {
+          reply({ code: e instanceof ApiError ? e.code : 50000, message: e instanceof ApiError ? e.message : "搜索失败", data: [] });
+        }
+        return;
+      }
+
       // ---- 当前用户展示信息（只读）----
       if (msg.type === "profile") {
         const reply = (body: unknown) =>

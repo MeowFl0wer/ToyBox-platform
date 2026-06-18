@@ -89,3 +89,19 @@ export async function getCurrentUser(): Promise<CurrentUser> {
   if (r.code !== 0) throw new Error(r.message || "获取用户信息失败");
   return r.data;
 }
+
+export interface UserHit {
+  uid: number;
+  uid_display: string;
+  username: string;
+  display_name: string;
+  avatar_url: string;
+}
+
+/** 按用户名/昵称/UID 搜索用户（最小公开资料），供模块「定向分享」选人。
+ *  模块拿不到全站用户目录，由宿主用当前登录态代调主站只读接口；返回不含邮箱等敏感字段。 */
+export async function searchUsers(q: string): Promise<UserHit[]> {
+  const r = await _rpc<UserHit[]>("user_search", { q });
+  if (r.code !== 0) throw new Error(r.message || "搜索失败");
+  return r.data || [];
+}

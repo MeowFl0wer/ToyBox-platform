@@ -16,6 +16,15 @@ export interface ApiUser {
   created_at?: string | null;
 }
 
+// 用户搜索命中项（最小公开资料，用于模块定向分享选人）
+export interface UserHit {
+  uid: number;
+  uid_display: string;
+  username: string;
+  display_name: string;
+  avatar_url: string;
+}
+
 export interface ApiModule {
   module_id: string;
   name: string;
@@ -159,6 +168,9 @@ export const api = {
   favorite: (id: string) => request<ApiModule>("POST", `/api/core/modules/${id}/favorite`, {}),
   unfavorite: (id: string) => request<ApiModule>("DELETE", `/api/core/modules/${id}/favorite`),
   siteContents: (keys: string) => request<Record<string, any>>("GET", `/api/core/site-contents?keys=${encodeURIComponent(keys)}`),
+  // 用户搜索（供模块「定向分享」选人，经宿主代理；仅返回最小公开资料）
+  userSearch: (q: string, limit = 10) =>
+    request<UserHit[]>("GET", `/api/core/users/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   // 访问上报（遥测，失败静默）
   reportPageView: (path: string, module_id = "") =>
     request("POST", "/api/core/analytics/page-view", { path, module_id }).catch(() => null),

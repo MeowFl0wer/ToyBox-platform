@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import FileResponse
-from sqlalchemy import func, text
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from ..core import ratelimit
@@ -284,6 +284,50 @@ def get_avatar(user_id: str):
         if p.exists():
             return FileResponse(str(p), media_type=mime)
     raise APIError(CODE_MODULE_NOT_FOUND, "头像不存在")
+
+
+@router.get("/users/search")
+def search_users(
+    q: str = Query(default="", max_length=40),
+    limit: int = Query(default=10, ge=1, le=20),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """按用户名 / 昵称 / UID 搜索用户，供模块（经 iframe 宿主代理）做「定向分享」选人用。
+
+    仅返回最小公开展示资料（uid / 登录名 / 展示名 / 头像），**不下发邮箱等敏感字段**；
+    需登录并限流。模块前端拿不到全站用户目录，只能通过本接口按需查找要分享的目标。
+    """
+    term = (q or "").strip().lstrip("@")
+    safe = term.replace("%", "").replace("_", "")
+    if not safe:
+        return ok([])
+    if not ratelimit.allow(f"user-search:{user.id}", limit=60, window_s=60):
+        raise APIError(CODE_RATE_LIMITED, "搜索过于频繁，请稍后再试")
+    like = f"%{safe}%"
+    conds = [User.username.ilike(like), User.nickname.ilike(like)]
+    if term.isdigit():
+        conds.append(User.uid == int(term))
+    rows = (
+        db.query(User)
+        .filter(User.status == "active")
+        .filter(or_(*conds))
+        .order_by(User.username.asc())
+        .limit(limit)
+        .all()
+    )
+    return ok(
+        [
+            {
+                "uid": u.uid,
+                "uid_display": u.uid_display,
+                "username": u.username,
+                "display_name": u.nickname or u.username,
+                "avatar_url": u.avatar_url,
+            }
+            for u in rows
+        ]
+    )
 
 
 @router.get("/site-contents")

@@ -371,6 +371,7 @@ class DockerRunner:
         if not ctx.db_enabled:
             return None
         import psycopg  # 仅生产镜像含 psycopg
+        from psycopg import sql
         mid = ctx.module_id
         db, user = self._db_name(mid), self._db_user(mid)  # 由已校验的 module_id 派生，标识符安全
         pw_file = ctx.dest / "db_password"
@@ -383,11 +384,26 @@ class DockerRunner:
             cur = conn.cursor()
             cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (user,))
             if not cur.fetchone():
-                cur.execute(f'CREATE ROLE "{user}" LOGIN PASSWORD %s', (pw,))
+                cur.execute(
+                    sql.SQL("CREATE ROLE {} LOGIN PASSWORD {}").format(
+                        sql.Identifier(user),
+                        sql.Literal(pw),
+                    )
+                )
             cur.execute("SELECT 1 FROM pg_database WHERE datname=%s", (db,))
             if not cur.fetchone():
-                cur.execute(f'CREATE DATABASE "{db}" OWNER "{user}"')
-            cur.execute(f'GRANT ALL PRIVILEGES ON DATABASE "{db}" TO "{user}"')
+                cur.execute(
+                    sql.SQL("CREATE DATABASE {} OWNER {}").format(
+                        sql.Identifier(db),
+                        sql.Identifier(user),
+                    )
+                )
+            cur.execute(
+                sql.SQL("GRANT ALL PRIVILEGES ON DATABASE {} TO {}").format(
+                    sql.Identifier(db),
+                    sql.Identifier(user),
+                )
+            )
         finally:
             conn.close()
         pw_file.write_text(pw)
